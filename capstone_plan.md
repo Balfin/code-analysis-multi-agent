@@ -1,3 +1,103 @@
+# AI-Powered Code Analysis Multi-Agent System
+
+## Project Overview
+
+An intelligent code analysis tool that uses a multi-agent architecture to automatically scan codebases, identify issues across multiple dimensions (security, performance, architecture), and provide actionable recommendations through an interactive interface.
+
+## Key Features
+
+- **Multi-Agent Analysis**: Three specialized AI agents (Security Expert, Performance Specialist, Architecture Analyst) work collaboratively to provide comprehensive code review
+- **LangGraph Orchestration**: Manages complex agent workflows with state management and conditional routing
+- **Persistent Issue Tracking**: Structured issue storage with markdown reports and JSON indexing
+- **Interactive Chat Interface**: Natural language Q&A about discovered issues with contextual understanding
+- **Real-Time Analysis**: Dashboard showing live progress and categorized results
+
+## Technology Stack
+
+| Component | Technology |
+|-----------|------------|
+| Agent Orchestration | LangGraph |
+| Agent Framework | LangChain |
+| LLM | Ollama (llama3) / OpenAI |
+| Backend API | FastAPI |
+| Frontend | React + Vite + Tailwind CSS |
+| Observability | LangSmith |
+| Storage | Local filesystem (Markdown + JSON) |
+
+## Architecture
+
+```
+┌─────────────────────────────────────────┐
+│         React Frontend                  │
+│  • Analysis Dashboard                   │
+│  • Issues Browser with Filters          │
+│  • Interactive Chat Panel               │
+└──────────────┬──────────────────────────┘
+               │
+               ▼
+┌─────────────────────────────────────────┐
+│         FastAPI Backend                 │
+│  ┌───────────────────────────────────┐  │
+│  │   LangGraph Multi-Agent System    │  │
+│  │                                   │  │
+│  │   Manager Agent                   │  │
+│  │      ├─→ Security Expert          │  │
+│  │      ├─→ Performance Analyst      │  │
+│  │      ├─→ Architecture Specialist  │  │
+│  │      └─→ Results Compiler         │  │
+│  └───────────────────────────────────┘  │
+│                                         │
+│  Tools: File Reader, AST Parser,        │
+│         Pattern Matcher, Code Analyzer  │
+└──────────────┬──────────────────────────┘
+               │
+               ▼
+┌─────────────────────────────────────────┐
+│         Data Layer                      │
+│  • Target Codebase (Local/GitHub)       │
+│  • Issues Storage (MD + JSON)           │
+└─────────────────────────────────────────┘
+```
+
+## Core Capabilities
+
+### 1. Security Analysis
+- SQL injection detection
+- Hardcoded secrets and credentials
+- Unsafe deserialization patterns
+- XSS and CSRF vulnerabilities
+- Path traversal issues
+
+### 2. Performance Analysis
+- N+1 query patterns
+- Memory leaks and excessive allocations
+- Blocking operations in async code
+- Inefficient algorithms
+- Missing caching opportunities
+
+### 3. Architecture Analysis
+- SOLID principle violations
+- Code duplication (DRY violations)
+- Tight coupling between modules
+- Missing abstractions
+- Poor error handling patterns
+
+## Implementation Phases
+
+1. **Infrastructure Setup** - Environment, dependencies, project structure
+2. **Core Data Models** - Issue schema, state management, persistence
+3. **Code Analysis Tools** - File readers, AST parsers, pattern matchers
+4. **Multi-Agent Orchestration** - LangGraph workflow with routing logic
+5. **LLM Integration** - Specialist agents with prompt engineering
+6. **Results Compilation** - Summary generation and issue aggregation
+7. **REST API** - FastAPI endpoints for analysis, issues, and chat
+8. **Frontend Structure** - React app with navigation and routing
+9. **Analysis Dashboard** - UI for triggering scans and viewing results
+10. **Issues Browser** - Filterable list with detail views
+11. **Chat Interface** - Q&A about findings with context awareness
+12. **Integration Testing** - End-to-end validation with LangSmith
+13. **Documentation** - Complete guides and demo materials
+
 # AI-Powered Code Analysis Multi-Agent System: Implementation Plan
 
 ## Overview
