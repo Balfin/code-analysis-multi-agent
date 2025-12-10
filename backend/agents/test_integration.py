@@ -215,14 +215,20 @@ class TestIssuePersistence:
         assert len(index) > 0
     
     def test_markdown_files_created(self, multi_file_project, temp_issues_dir):
-        """Test that markdown files are created for each issue."""
+        """Test that markdown files are created in hierarchical structure."""
         run_analysis(
             target_path=multi_file_project,
             config={"issues_dir": temp_issues_dir}
         )
         
-        md_files = list(Path(temp_issues_dir).glob("*.md"))
+        # Check for markdown files in hierarchical structure: {type}/{risk_level}/*.md
+        md_files = list(Path(temp_issues_dir).glob("**/*.md"))
         assert len(md_files) > 0
+        
+        # Verify hierarchical structure exists
+        issues_path = Path(temp_issues_dir)
+        type_dirs = [d for d in issues_path.iterdir() if d.is_dir()]
+        assert len(type_dirs) > 0  # At least one type directory should exist
     
     def test_persist_issues_function(self, temp_issues_dir):
         """Test _persist_issues function directly."""

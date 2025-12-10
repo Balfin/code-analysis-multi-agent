@@ -33,7 +33,11 @@ from agents.graph import run_analysis
 # Configuration
 # =============================================================================
 
-ISSUES_DIR = os.getenv("ISSUES_DIR", "./issues")
+# Issues directory is at the project root, not in backend/
+# When running from backend/, we need to go up one level
+_BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_BACKEND_DIR)
+ISSUES_DIR = os.getenv("ISSUES_DIR", os.path.join(_PROJECT_ROOT, "issues"))
 
 # Thread pool for running sync analysis in background
 executor = ThreadPoolExecutor(max_workers=2)

@@ -1,4 +1,23 @@
-# This directory stores generated issue reports
+# This directory stores generated issue reports in a hierarchical structure:
+#
+# issues/
+# ├── security/
+# │   ├── critical/
+# │   │   └── {issue_id}.md
+# │   ├── high/
+# │   ├── medium/
+# │   └── low/
+# ├── performance/
+# │   ├── critical/
+# │   ├── high/
+# │   ├── medium/
+# │   └── low/
+# ├── architecture/
+# │   ├── critical/
+# │   ├── high/
+# │   ├── medium/
+# │   └── low/
+# └── index.json
+#
 # Each issue is saved as a markdown file with a unique hash-based ID
-# An index.json file tracks all issues for quick lookup
-
+# An index.json file at the root tracks all issues for quick lookup

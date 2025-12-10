@@ -352,6 +352,31 @@ class TestIssueStore:
         assert summary["by_risk_level"]["critical"] == 1
         assert summary["by_risk_level"]["high"] == 1
         assert summary["by_risk_level"]["medium"] == 1
+    
+    def test_hierarchical_structure(self, temp_issue_store, sample_issues):
+        """Test that issues are saved in hierarchical directory structure."""
+        for issue in sample_issues:
+            temp_issue_store.save(issue)
+        
+        # Check security/critical directory exists
+        security_critical_dir = temp_issue_store.directory / "security" / "critical"
+        assert security_critical_dir.exists()
+        assert security_critical_dir.is_dir()
+        
+        # Check performance/high directory exists
+        performance_high_dir = temp_issue_store.directory / "performance" / "high"
+        assert performance_high_dir.exists()
+        
+        # Check architecture/medium directory exists
+        architecture_medium_dir = temp_issue_store.directory / "architecture" / "medium"
+        assert architecture_medium_dir.exists()
+        
+        # Check that markdown files exist in correct locations
+        security_files = list(security_critical_dir.glob("*.md"))
+        assert len(security_files) == 1
+        
+        performance_files = list(performance_high_dir.glob("*.md"))
+        assert len(performance_files) == 1
 
 
 # =============================================================================

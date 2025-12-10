@@ -98,10 +98,17 @@ Thumbs.db
 # ===========================================
 # Project Specific
 # ===========================================
-# Generated issues (keep the directory, ignore contents for testing)
-issues/*.md
-issues/*.json
+# Generated issues (hierarchical structure: issues/{type}/{risk_level}/*.md)
+# Keep the root directory with .gitkeep, ignore generated content
+issues/**/*.md
+issues/**/*.json
+issues/security/
+issues/performance/
+issues/architecture/
 !issues/.gitkeep
+
+# Legacy backend/issues directory (should not be used)
+backend/issues/
 
 # Test artifacts
 test_project/

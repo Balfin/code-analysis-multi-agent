@@ -183,11 +183,23 @@ class IssueStore:
     """
     Manages persistence of issues to the filesystem.
     
-    Issues are stored as:
-    - Individual markdown files: {issue_id}.md
-    - Index file: index.json (for quick lookups)
+    Issues are stored in a hierarchical structure:
+    - {base_dir}/{type}/{risk_level}/{issue_id}.md
+    - Index file: {base_dir}/index.json (for quick lookups)
     
-    The store automatically creates the directory if it doesn't exist.
+    Example structure:
+        issues/
+        ├── security/
+        │   ├── critical/
+        │   │   └── abc123.md
+        │   └── high/
+        │       └── def456.md
+        ├── performance/
+        │   └── medium/
+        │       └── ghi789.md
+        └── index.json
+    
+    The store automatically creates directories as needed.
     """
     
     def __init__(self, directory: str = "./issues"):
@@ -195,14 +207,59 @@ class IssueStore:
         Initialize the IssueStore.
         
         Args:
-            directory: Path to the directory for storing issues
+            directory: Path to the base directory for storing issues
         """
         self.directory = Path(directory)
         self._ensure_directory()
     
     def _ensure_directory(self) -> None:
-        """Create the issues directory if it doesn't exist."""
+        """Create the base issues directory if it doesn't exist."""
         self.directory.mkdir(parents=True, exist_ok=True)
+    
+    def _get_issue_dir(self, issue_type: str, risk_level: str) -> Path:
+        """Get the directory path for an issue based on type and risk level."""
+        return self.directory / issue_type / risk_level
+    
+    def _get_issue_path(self, issue_id: str, issue_type: str, risk_level: str) -> Path:
+        """Get the full path for an issue markdown file."""
+        return self._get_issue_dir(issue_type, risk_level) / f"{issue_id}.md"
+    
+    def _find_issue_file(self, issue_id: str) -> Optional[Path]:
+        """
+        Find an issue file by ID, searching through all type/risk directories.
+        
+        Args:
+            issue_id: The issue ID to find
+            
+        Returns:
+            Path to the file if found, None otherwise
+        """
+        # First check index for type/risk_level info
+        index = self._load_index()
+        for entry in index:
+            if entry.get('id') == issue_id:
+                issue_type = entry.get('type')
+                risk_level = entry.get('risk_level')
+                if issue_type and risk_level:
+                    path = self._get_issue_path(issue_id, issue_type, risk_level)
+                    if path.exists():
+                        return path
+        
+        # Fallback: search all directories
+        for type_dir in self.directory.iterdir():
+            if type_dir.is_dir() and type_dir.name != '.git':
+                for risk_dir in type_dir.iterdir():
+                    if risk_dir.is_dir():
+                        md_path = risk_dir / f"{issue_id}.md"
+                        if md_path.exists():
+                            return md_path
+        
+        # Also check flat structure for backward compatibility
+        flat_path = self.directory / f"{issue_id}.md"
+        if flat_path.exists():
+            return flat_path
+        
+        return None
     
     def _get_index_path(self) -> Path:
         """Get the path to the index file."""
@@ -227,8 +284,9 @@ class IssueStore:
     
     def save(self, issue: Issue) -> Path:
         """
-        Save an issue to the filesystem.
+        Save an issue to the filesystem in hierarchical structure.
         
+        Creates directories as needed: {base}/{type}/{risk_level}/
         Creates both a markdown file and updates the index.
         If an issue with the same ID already exists, it will be overwritten.
         
@@ -238,16 +296,39 @@ class IssueStore:
         Returns:
             Path to the saved markdown file
         """
+        # Get issue type and risk level values
+        issue_type = issue.type.value if isinstance(issue.type, IssueType) else issue.type
+        risk_level = issue.risk_level.value if isinstance(issue.risk_level, RiskLevel) else issue.risk_level
+        
+        # Create directory structure: issues/{type}/{risk_level}/
+        issue_dir = self._get_issue_dir(issue_type, risk_level)
+        issue_dir.mkdir(parents=True, exist_ok=True)
+        
         # Save markdown file
-        md_path = self.directory / f"{issue.id}.md"
+        md_path = issue_dir / f"{issue.id}.md"
         with open(md_path, 'w', encoding='utf-8') as f:
             f.write(issue.to_markdown())
         
         # Update index
         index = self._load_index()
         
-        # Remove existing entry with same ID if present
-        index = [entry for entry in index if entry.get('id') != issue.id]
+        # Remove existing entry with same ID if present (might be in different location)
+        old_entry = None
+        for entry in index:
+            if entry.get('id') == issue.id:
+                old_entry = entry
+                break
+        
+        if old_entry:
+            # Delete old file if it exists in a different location
+            old_type = old_entry.get('type')
+            old_risk = old_entry.get('risk_level')
+            if old_type != issue_type or old_risk != risk_level:
+                old_path = self._get_issue_path(issue.id, old_type, old_risk)
+                if old_path.exists():
+                    old_path.unlink()
+            
+            index = [entry for entry in index if entry.get('id') != issue.id]
         
         # Add new entry
         index.append(issue.to_dict())
@@ -323,8 +404,8 @@ class IssueStore:
         Returns:
             Markdown content if found, None otherwise
         """
-        md_path = self.directory / f"{issue_id}.md"
-        if md_path.exists():
+        md_path = self._find_issue_file(issue_id)
+        if md_path and md_path.exists():
             with open(md_path, 'r', encoding='utf-8') as f:
                 return f.read()
         return None
@@ -339,26 +420,48 @@ class IssueStore:
         Returns:
             True if deleted, False if not found
         """
-        # Remove from index
+        # Find and remove from index
         index = self._load_index()
-        original_length = len(index)
-        index = [entry for entry in index if entry.get('id') != issue_id]
+        issue_entry = None
+        for entry in index:
+            if entry.get('id') == issue_id:
+                issue_entry = entry
+                break
         
-        if len(index) == original_length:
+        if not issue_entry:
             return False
         
+        # Remove from index
+        index = [entry for entry in index if entry.get('id') != issue_id]
         self._save_index(index)
         
-        # Remove markdown file
-        md_path = self.directory / f"{issue_id}.md"
-        if md_path.exists():
-            md_path.unlink()
+        # Remove markdown file from hierarchical location
+        issue_type = issue_entry.get('type')
+        risk_level = issue_entry.get('risk_level')
+        if issue_type and risk_level:
+            md_path = self._get_issue_path(issue_id, issue_type, risk_level)
+            if md_path.exists():
+                md_path.unlink()
+                
+                # Clean up empty directories
+                parent_dir = md_path.parent
+                if parent_dir.exists() and not any(parent_dir.iterdir()):
+                    parent_dir.rmdir()
+                    # Also try to remove type directory if empty
+                    type_dir = parent_dir.parent
+                    if type_dir.exists() and type_dir != self.directory and not any(type_dir.iterdir()):
+                        type_dir.rmdir()
+        
+        # Also check flat structure for backward compatibility
+        flat_path = self.directory / f"{issue_id}.md"
+        if flat_path.exists():
+            flat_path.unlink()
         
         return True
     
     def clear(self) -> int:
         """
-        Delete all issues.
+        Delete all issues and clean up directory structure.
         
         Returns:
             Number of issues deleted
@@ -366,11 +469,32 @@ class IssueStore:
         index = self._load_index()
         count = len(index)
         
-        # Delete all markdown files
+        # Delete all markdown files from hierarchical structure
         for entry in index:
-            md_path = self.directory / f"{entry.get('id')}.md"
-            if md_path.exists():
-                md_path.unlink()
+            issue_id = entry.get('id')
+            issue_type = entry.get('type')
+            risk_level = entry.get('risk_level')
+            
+            # Try hierarchical path first
+            if issue_type and risk_level:
+                md_path = self._get_issue_path(issue_id, issue_type, risk_level)
+                if md_path.exists():
+                    md_path.unlink()
+            
+            # Also check flat structure for backward compatibility
+            flat_path = self.directory / f"{issue_id}.md"
+            if flat_path.exists():
+                flat_path.unlink()
+        
+        # Clean up empty directories
+        for type_dir in list(self.directory.iterdir()):
+            if type_dir.is_dir() and type_dir.name not in ('.git', '__pycache__'):
+                for risk_dir in list(type_dir.iterdir()):
+                    if risk_dir.is_dir() and not any(risk_dir.iterdir()):
+                        risk_dir.rmdir()
+                # Remove type dir if empty
+                if not any(type_dir.iterdir()):
+                    type_dir.rmdir()
         
         # Clear the index
         self._save_index([])
