@@ -1,0 +1,213 @@
+@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+/* Custom theme configuration */
+@theme {
+  --color-zinc-850: #1f1f23;
+  --color-zinc-950: #09090b;
+  
+  /* Risk level colors */
+  --color-critical: #dc2626;
+  --color-critical-light: #fef2f2;
+  --color-high: #ea580c;
+  --color-high-light: #fff7ed;
+  --color-medium: #ca8a04;
+  --color-medium-light: #fefce8;
+  --color-low: #16a34a;
+  --color-low-light: #f0fdf4;
+  
+  --font-family-sans: 'Inter', system-ui, sans-serif;
+  --font-family-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  
+  --animate-pulse-slow: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-fade-in: fadeIn 0.3s ease-in-out;
+  --animate-slide-up: slideUp 0.3s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Custom base styles */
+@layer base {
+  html {
+    @apply antialiased;
+  }
+  
+  body {
+    @apply bg-zinc-950 text-zinc-100;
+  }
+  
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    @apply w-2;
+  }
+  
+  ::-webkit-scrollbar-track {
+    @apply bg-zinc-900;
+  }
+  
+  ::-webkit-scrollbar-thumb {
+    @apply bg-zinc-700 rounded-full;
+  }
+  
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-zinc-600;
+  }
+}
+
+/* Custom component styles */
+@layer components {
+  .btn {
+    @apply px-4 py-2 rounded-lg font-medium transition-all duration-200;
+    @apply focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-zinc-950;
+  }
+  
+  .btn-primary {
+    @apply bg-indigo-600 text-white;
+  }
+  
+  .btn-primary:hover {
+    @apply bg-indigo-500;
+  }
+  
+  .btn-secondary {
+    @apply bg-zinc-800 text-zinc-100;
+  }
+  
+  .btn-secondary:hover {
+    @apply bg-zinc-700;
+  }
+  
+  .card {
+    @apply bg-zinc-900 rounded-xl border border-zinc-800;
+    @apply shadow-lg;
+  }
+  
+  .input {
+    @apply w-full px-4 py-2 rounded-lg;
+    @apply bg-zinc-800 border border-zinc-700;
+    @apply text-zinc-100 placeholder-zinc-500;
+    @apply focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent;
+    @apply transition-all duration-200;
+  }
+  
+  /* Risk level badges */
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+  
+  .badge-critical {
+    @apply bg-red-900/50 text-red-300 border border-red-800;
+  }
+  
+  .badge-high {
+    @apply bg-orange-900/50 text-orange-300 border border-orange-800;
+  }
+  
+  .badge-medium {
+    @apply bg-yellow-900/50 text-yellow-300 border border-yellow-800;
+  }
+  
+  .badge-low {
+    @apply bg-green-900/50 text-green-300 border border-green-800;
+  }
+  
+  /* Issue type badges */
+  .badge-security {
+    @apply bg-red-900/30 text-red-400;
+  }
+  
+  .badge-performance {
+    @apply bg-amber-900/30 text-amber-400;
+  }
+  
+  .badge-architecture {
+    @apply bg-blue-900/30 text-blue-400;
+  }
+}
+
+/* Animation utilities */
+@layer utilities {
+  .animate-fade-in {
+    animation: fadeIn 0.3s ease-in-out;
+  }
+  
+  .animate-slide-up {
+    animation: slideUp 0.3s ease-out;
+  }
+}
+
+/* Markdown content styling */
+.markdown-content {
+  @apply text-zinc-300 leading-relaxed;
+}
+
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3 {
+  @apply text-zinc-100 font-semibold mt-6 mb-3;
+}
+
+.markdown-content h1 {
+  @apply text-2xl;
+}
+
+.markdown-content h2 {
+  @apply text-xl;
+}
+
+.markdown-content h3 {
+  @apply text-lg;
+}
+
+.markdown-content p {
+  @apply mb-4;
+}
+
+.markdown-content code {
+  @apply bg-zinc-800 px-1.5 py-0.5 rounded text-sm font-mono text-indigo-300;
+}
+
+.markdown-content pre {
+  @apply bg-zinc-800 rounded-lg p-4 overflow-x-auto mb-4;
+}
+
+.markdown-content pre code {
+  @apply bg-transparent p-0 text-zinc-300;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  @apply mb-4 pl-6;
+}
+
+.markdown-content ul {
+  @apply list-disc;
+}
+
+.markdown-content ol {
+  @apply list-decimal;
+}
+
+.markdown-content li {
+  @apply mb-1;
+}
+
+.markdown-content a {
+  @apply text-indigo-400 underline;
+}
+
+.markdown-content a:hover {
+  @apply text-indigo-300;
+}
+
+.markdown-content blockquote {
+  @apply border-l-4 border-zinc-700 pl-4 italic text-zinc-400;
+}

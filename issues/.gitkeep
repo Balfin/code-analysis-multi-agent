@@ -1,0 +1,4 @@
+# This directory stores generated issue reports
+# Each issue is saved as a markdown file with a unique hash-based ID
+# An index.json file tracks all issues for quick lookup
+
