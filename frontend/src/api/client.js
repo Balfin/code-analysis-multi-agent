@@ -1,93 +1,203 @@
 /**
  * API Client for Code Analysis Multi-Agent System
  * 
- * This module provides functions to interact with the backend API.
- * Endpoints will be implemented in Phase 7.
+ * Provides methods to interact with the FastAPI backend:
+ * - Health check
+ * - Code analysis
+ * - Issue management
+ * - Chat functionality
  */
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 /**
- * Generic fetch wrapper with error handling
+ * Custom error class for API errors
  */
-async function fetchAPI(endpoint, options = {}) {
-  const url = `${API_BASE}${endpoint}`
+export class APIError extends Error {
+  constructor(message, status, data = null) {
+    super(message)
+    this.name = 'APIError'
+    this.status = status
+    this.data = data
+  }
+}
+
+/**
+ * Make an API request with error handling
+ */
+async function apiRequest(endpoint, options = {}) {
+  const url = `${API_BASE_URL}${endpoint}`
   
-  const defaultOptions = {
+  const config = {
     headers: {
       'Content-Type': 'application/json',
+      ...options.headers,
     },
+    ...options,
   }
 
-  const response = await fetch(url, { ...defaultOptions, ...options })
+  try {
+    const response = await fetch(url, config)
+    
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}))
+      throw new APIError(
+        errorData.detail || `HTTP ${response.status}`,
+        response.status,
+        errorData
+      )
+    }
 
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: 'Unknown error' }))
-    throw new Error(error.detail || `HTTP ${response.status}`)
+    return await response.json()
+  } catch (error) {
+    if (error instanceof APIError) {
+      throw error
+    }
+    // Network or other error
+    throw new APIError(
+      error.message || 'Network error',
+      0,
+      { originalError: error }
+    )
   }
-
-  return response.json()
 }
+
+// =============================================================================
+// Health Check
+// =============================================================================
 
 /**
- * Health check endpoint
+ * Check backend health status
+ * @returns {Promise<{status: string, version: string, issues_count: number}>}
  */
 export async function checkHealth() {
-  return fetchAPI('/health')
+  return apiRequest('/health')
 }
+
+// =============================================================================
+// Analysis
+// =============================================================================
 
 /**
  * Start code analysis
- * @param {string} path - Path to the codebase to analyze
- * @param {string[]} fileTypes - File patterns to include (default: ['*.py'])
+ * @param {string} path - Path to codebase to analyze
+ * @param {Object} options - Analysis options
+ * @param {string[]} options.fileTypes - File patterns to analyze (default: ["*.py"])
+ * @param {boolean} options.asyncMode - Run in background (default: false)
+ * @returns {Promise<Object>} Analysis results or task ID
  */
-export async function startAnalysis(path, fileTypes = ['*.py']) {
-  return fetchAPI('/analyze', {
+export async function startAnalysis(path, options = {}) {
+  return apiRequest('/analyze', {
     method: 'POST',
-    body: JSON.stringify({ path, file_types: fileTypes }),
+    body: JSON.stringify({
+      path,
+      file_types: options.fileTypes || ['*.py'],
+      async_mode: options.asyncMode || false,
+    }),
   })
 }
 
 /**
- * Get all issues with optional filters
+ * Get status of async analysis task
+ * @param {string} taskId - Task ID from startAnalysis
+ * @returns {Promise<Object>} Task status and results
+ */
+export async function getAnalysisStatus(taskId) {
+  return apiRequest(`/analyze/${taskId}/status`)
+}
+
+// =============================================================================
+// Issues
+// =============================================================================
+
+/**
+ * Get list of issues with optional filtering
  * @param {Object} filters - Filter options
- * @param {string} filters.type - Issue type (security, performance, architecture)
- * @param {string} filters.risk_level - Risk level (critical, high, medium, low)
+ * @param {string} filters.type - Filter by type (security, performance, architecture)
+ * @param {string} filters.riskLevel - Filter by risk (critical, high, medium, low)
+ * @param {string} filters.search - Search in title and description
+ * @param {string} filters.file - Filter by file path
+ * @param {number} filters.page - Page number (1-indexed)
+ * @param {number} filters.pageSize - Items per page (max 100)
+ * @returns {Promise<{issues: Array, total: number, filtered_total: number, page: number, page_size: number}>}
  */
 export async function getIssues(filters = {}) {
   const params = new URLSearchParams()
-  if (filters.type) params.append('type', filters.type)
-  if (filters.risk_level) params.append('risk_level', filters.risk_level)
   
-  const query = params.toString()
-  return fetchAPI(`/issues${query ? `?${query}` : ''}`)
+  if (filters.type) params.append('type', filters.type)
+  if (filters.riskLevel) params.append('risk_level', filters.riskLevel)
+  if (filters.search) params.append('search', filters.search)
+  if (filters.file) params.append('file', filters.file)
+  if (filters.page) params.append('page', filters.page.toString())
+  if (filters.pageSize) params.append('page_size', filters.pageSize.toString())
+
+  const queryString = params.toString()
+  return apiRequest(`/issues${queryString ? `?${queryString}` : ''}`)
 }
 
 /**
- * Get a specific issue by ID
- * @param {string} issueId - The issue ID
+ * Get issues summary statistics
+ * @returns {Promise<{total: number, by_type: Object, by_risk_level: Object}>}
  */
-export async function getIssueById(issueId) {
-  return fetchAPI(`/issues/${issueId}`)
+export async function getIssuesSummary() {
+  return apiRequest('/issues/summary')
 }
 
 /**
- * Send a chat message
- * @param {string} message - The user's message
- * @param {string|null} context - Optional issue ID for context
+ * Get detailed information about a specific issue
+ * @param {string} issueId - Issue ID
+ * @returns {Promise<Object>} Full issue details with markdown content
  */
-export async function sendChatMessage(message, context = null) {
-  return fetchAPI('/chat', {
-    method: 'POST',
-    body: JSON.stringify({ message, context }),
+export async function getIssueDetail(issueId) {
+  return apiRequest(`/issues/${issueId}`)
+}
+
+/**
+ * Delete an issue
+ * @param {string} issueId - Issue ID to delete
+ * @returns {Promise<{status: string, id: string}>}
+ */
+export async function deleteIssue(issueId) {
+  return apiRequest(`/issues/${issueId}`, {
+    method: 'DELETE',
   })
 }
 
-export default {
-  checkHealth,
-  startAnalysis,
-  getIssues,
-  getIssueById,
-  sendChatMessage,
+// =============================================================================
+// Chat
+// =============================================================================
+
+/**
+ * Send a chat message and get AI response
+ * @param {string} message - User's question or message
+ * @param {Object} context - Optional context
+ * @param {string} context.issueId - ID of issue being discussed
+ * @returns {Promise<{response: string, issues_referenced: string[], suggestions: string[]}>}
+ */
+export async function sendChatMessage(message, context = null) {
+  return apiRequest('/chat', {
+    method: 'POST',
+    body: JSON.stringify({
+      message,
+      context: context ? { issue_id: context.issueId } : null,
+    }),
+  })
 }
 
+// =============================================================================
+// Export default client object
+// =============================================================================
+
+const apiClient = {
+  checkHealth,
+  startAnalysis,
+  getAnalysisStatus,
+  getIssues,
+  getIssuesSummary,
+  getIssueDetail,
+  deleteIssue,
+  sendChatMessage,
+  APIError,
+}
+
+export default apiClient
