@@ -95,6 +95,12 @@ class Settings(BaseSettings):
     # Issue storage
     issues_dir: str = Field(default="./issues")
     
+    # RAG storage
+    rag_data_dir: str = Field(
+        default="./rag_data",
+        description="Directory for storing RAG metadata"
+    )
+    
     # Analysis settings
     max_file_size: int = Field(
         default=1048576,  # 1MB
@@ -174,7 +180,6 @@ def get_llm(model_override: Optional[str] = None):
             base_url=settings.ollama_base_url,
             temperature=settings.llm_temperature,
             num_predict=settings.llm_max_tokens,
-            format=None,  # Avoid format validation errors while allowing prompt-driven output
         )
 
 

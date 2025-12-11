@@ -221,6 +221,22 @@ def run_analysis_sync(task_id: str, path: str, config: dict) -> None:
             "completed_at": datetime.now().isoformat(),
         })
         
+        # Save analysis metadata for RAG
+        try:
+            from models.rag_store import RAGStore
+            from config import get_settings
+            
+            settings = get_settings()
+            rag_store = RAGStore(directory=settings.rag_data_dir)
+            rag_store.save_analysis_metadata(
+                analyzed_path=path,
+                files=processed,
+                target_path=result.get("target_path", path)
+            )
+        except Exception as rag_error:
+            # Don't fail the analysis if RAG storage fails
+            print(f"Warning: Failed to save RAG metadata: {rag_error}")
+        
     except Exception as e:
         analysis_tasks[task_id].update({
             "status": "error",
@@ -378,6 +394,22 @@ async def analyze_codebase(
         score -= min(medium * 3, 30)
         score -= min(low * 1, 10)
         health_score = max(0, min(100, score))
+        
+        # Save analysis metadata for RAG
+        try:
+            from models.rag_store import RAGStore
+            from config import get_settings
+            
+            settings = get_settings()
+            rag_store = RAGStore(directory=settings.rag_data_dir)
+            rag_store.save_analysis_metadata(
+                analyzed_path=request.path,
+                files=processed,
+                target_path=result.get("target_path", request.path)
+            )
+        except Exception as rag_error:
+            # Don't fail the analysis if RAG storage fails
+            print(f"Warning: Failed to save RAG metadata: {rag_error}")
         
         return AnalysisResponse(
             status="completed",
@@ -622,12 +654,22 @@ async def chat_about_issues(request: ChatRequest):
     
     Send a question about the codebase or issues and get an AI-powered response.
     Context can include the current issue being viewed for more relevant answers.
+    Uses RAG to retrieve relevant code context from the analyzed folder.
     """
     store = get_issue_store()
     
     # Get relevant context
     all_issues = store.get_all()
     summary = store.summary()
+    
+    # Initialize RAG components
+    from models.rag_store import RAGStore
+    from rag.retriever import CodeRetriever
+    from config import get_settings
+    
+    settings = get_settings()
+    rag_store = RAGStore(directory=settings.rag_data_dir)
+    retriever = CodeRetriever(issue_store=store, rag_store=rag_store)
     
     # Build context string
     context_str = f"""
@@ -641,6 +683,56 @@ Code Analysis Summary:
 - Medium: {summary.get('by_risk_level', {}).get('medium', 0)}
 - Low: {summary.get('by_risk_level', {}).get('low', 0)}
 """
+    
+    # Add analyzed folder information if available
+    folder_info = retriever.get_analyzed_folder_info()
+    if folder_info:
+        context_str += f"""
+Analyzed Folder:
+- Path: {folder_info.get('path', 'Unknown')}
+- Total Files: {folder_info.get('total_files', 0)}
+- Analyzed At: {folder_info.get('analyzed_at', 'Unknown')}
+"""
+    
+    # Retrieve relevant code context using RAG
+    retrieved_context = []
+    try:
+        retrieved_context = retriever.retrieve_relevant_context(
+            query=request.message,
+            max_results=5
+        )
+    except Exception as rag_error:
+        # Don't fail if RAG retrieval fails
+        print(f"Warning: RAG retrieval failed: {rag_error}")
+    
+    # Filter out any invalid contexts (missing code snippets)
+    retrieved_context = [
+        ctx for ctx in retrieved_context
+        if ctx.get("code_snippet") and len(ctx.get("code_snippet", "").strip()) > 0
+    ]
+    
+    # Add retrieved code snippets to context
+    if retrieved_context:
+        context_str += "\n\nRelevant Code Context from Analyzed Folder:\n"
+        for idx, ctx in enumerate(retrieved_context, 1):
+            code_snippet = ctx.get('code_snippet', '').strip()
+            description = (ctx.get('description', '') or '')[:200]
+            location = ctx.get('location', 'Unknown')
+            title = ctx.get('title', 'N/A')
+            issue_type = ctx.get('type', 'unknown')
+            risk_level = ctx.get('risk_level', 'unknown')
+            
+            if code_snippet:  # Only add if we have actual code
+                context_str += f"""
+{idx}. Location: {location}
+   Issue: {title} ({issue_type} - {risk_level})
+   Code Snippet:
+```python
+{code_snippet}
+```
+"""
+                if description:
+                    context_str += f"   Description: {description}\n"
     
     # Add specific issue context if provided
     if request.context and request.context.get("issue_id"):
@@ -665,24 +757,27 @@ Current Issue Context:
     
     # Try to use LLM for response
     try:
-        from config import get_settings, get_llm
         from langchain_core.prompts import ChatPromptTemplate
-        
-        settings = get_settings()
+        from config import get_llm
         
         if settings.use_llm_analysis:
             llm = get_llm()
             
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", """You are a helpful code analysis assistant. You help developers understand
+            # Enhanced system prompt with RAG context
+            system_prompt = """You are a helpful code analysis assistant. You help developers understand
 and fix code issues found during automated analysis.
 
 You have access to the following context about the codebase:
 {context}
 
-Be helpful, concise, and provide actionable advice. If asked about specific issues,
-reference them by title and location. If asked for recommendations, prioritize
-critical and high-risk issues first."""),
+Be helpful, concise, and provide actionable advice. When referencing code, use the specific
+file locations and code snippets provided. If asked about specific issues, reference them
+by title and location. If asked for recommendations, prioritize critical and high-risk
+issues first. Use the retrieved code context to provide detailed, accurate answers about
+the codebase."""
+            
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", system_prompt),
                 ("human", "{message}")
             ])
             
@@ -696,8 +791,10 @@ critical and high-risk issues first."""),
             # Find referenced issues
             issues_referenced = []
             for issue in all_issues[:20]:  # Check first 20 issues
-                if issue.title.lower() in response.content.lower():
-                    issues_referenced.append(issue.id)
+                issue_title = issue.get('title', '').lower() if isinstance(issue, dict) else issue.title.lower()
+                if issue_title and issue_title in response.content.lower():
+                    issue_id = issue.get('id') if isinstance(issue, dict) else issue.id
+                    issues_referenced.append(issue_id)
             
             return ChatResponse(
                 response=response.content,
@@ -707,6 +804,7 @@ critical and high-risk issues first."""),
     
     except Exception as e:
         # Fall back to simple response
+        print(f"Warning: LLM chat failed: {e}")
         pass
     
     # Simple fallback response without LLM

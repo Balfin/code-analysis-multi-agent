@@ -54,14 +54,14 @@ Return a JSON array of issues. Each issue MUST have these exact fields:
 Example output:
 ```json
 [
-  {
+  {{
     "title": "SQL Injection Vulnerability",
     "risk_level": "critical",
     "line_number": 15,
     "description": "User input is directly interpolated into SQL query, allowing attackers to manipulate the database.",
-    "code_snippet": "query = f\"SELECT * FROM users WHERE id = '{user_id}'\"",
+    "code_snippet": "query = f\"SELECT * FROM users WHERE id = '{{user_id}}'\"",
     "solution": "Use parameterized queries: cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))"
-  }
+  }}
 ]
 ```
 
@@ -132,14 +132,14 @@ Return a JSON array of issues. Each issue MUST have these exact fields:
 Example output:
 ```json
 [
-  {
+  {{
     "title": "N+1 Query Pattern",
     "risk_level": "high",
     "line_number": 42,
     "description": "Database query inside loop causes N+1 problem. For 1000 users, this executes 1001 queries.",
     "code_snippet": "for user in users: posts = db.query(f'SELECT...')",
     "solution": "Use eager loading: users = db.query(User).options(joinedload(User.posts)).all()"
-  }
+  }}
 ]
 ```
 
@@ -210,14 +210,14 @@ Return a JSON array of issues. Each issue MUST have these exact fields:
 Example output:
 ```json
 [
-  {
+  {{
     "title": "God Class - Too Many Responsibilities",
     "risk_level": "high",
     "line_number": 1,
     "description": "UserManager class handles authentication, authorization, profile management, and notifications. This violates SRP.",
     "code_snippet": "class UserManager: # 500 lines, 25 methods",
     "solution": "Split into focused classes: AuthService, ProfileService, NotificationService"
-  }
+  }}
 ]
 ```
 
@@ -277,6 +277,11 @@ def parse_llm_issues(response: str, file_path: str, issue_type: str) -> list:
     """
     Parse LLM response into structured issues.
     
+    Handles malformed JSON from LLM responses, including:
+    - Smart quotes (curly quotes)
+    - Unescaped quotes in string values
+    - Trailing commas
+    
     Args:
         response: Raw LLM response text
         file_path: Path to the analyzed file
@@ -288,32 +293,101 @@ def parse_llm_issues(response: str, file_path: str, issue_type: str) -> list:
     import json
     import re
     
+    if not response or not response.strip():
+        return []
+    
+    # Replace smart quotes with regular quotes
+    cleaned_response = response
+    cleaned_response = cleaned_response.replace('"', '"').replace('"', '"')
+    cleaned_response = cleaned_response.replace(''', "'").replace(''', "'")
+    
     # Try to extract JSON from the response
-    # Handle cases where LLM adds extra text
-    json_match = re.search(r'\[[\s\S]*\]', response)
+    json_match = re.search(r'\[[\s\S]*\]', cleaned_response)
+    if not json_match:
+        json_match = re.search(r'\{[\s\S]*\}', cleaned_response)
     
     if not json_match:
-        # No JSON array found
         return []
     
+    json_str = json_match.group()
+    
+    # Try standard JSON parsing first
     try:
-        issues_data = json.loads(json_match.group())
+        issues_data = json.loads(json_str)
+        if isinstance(issues_data, dict):
+            issues_data = [issues_data]
+        if isinstance(issues_data, list):
+            return _convert_to_issue_format(issues_data, file_path, issue_type)
     except json.JSONDecodeError:
-        # Try to fix common JSON issues
-        cleaned = json_match.group()
+        pass
+    
+    # Try with common fixes
+    try:
+        cleaned = json_str
         cleaned = re.sub(r',\s*]', ']', cleaned)  # Remove trailing commas
-        cleaned = re.sub(r',\s*}', '}', cleaned)  # Remove trailing commas in objects
+        cleaned = re.sub(r',\s*}', '}', cleaned)
+        cleaned = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', cleaned)
         
-        try:
-            issues_data = json.loads(cleaned)
-        except json.JSONDecodeError:
-            return []
+        issues_data = json.loads(cleaned)
+        if isinstance(issues_data, dict):
+            issues_data = [issues_data]
+        if isinstance(issues_data, list):
+            return _convert_to_issue_format(issues_data, file_path, issue_type)
+    except json.JSONDecodeError:
+        pass
     
-    if not isinstance(issues_data, list):
-        return []
+    # Fall back to regex-based extraction for malformed JSON
+    issues_data = _extract_issues_with_regex(cleaned_response)
+    return _convert_to_issue_format(issues_data, file_path, issue_type)
+
+
+def _extract_issues_with_regex(response: str) -> list:
+    """Extract issues using regex when JSON parsing fails."""
+    import re
     
-    # Convert to our issue format
     issues = []
+    
+    # Split into potential objects by looking for title field starts
+    parts = re.split(r'(?=\{\s*"title")', response)
+    
+    for part in parts:
+        if '"title"' not in part:
+            continue
+            
+        issue = {}
+        
+        # Extract each field with patterns
+        field_patterns = {
+            'title': r'"title"\s*:\s*"([^"]+)"',
+            'risk_level': r'"risk_level"\s*:\s*"([^"]+)"',
+            'line_number': r'"line_number"\s*:\s*(\d+)',
+            'description': r'"description"\s*:\s*"((?:[^"\\]|\\.)*)"',
+            'solution': r'"solution"\s*:\s*"((?:[^"\\]|\\.)*)"',
+        }
+        
+        for field, pattern in field_patterns.items():
+            match = re.search(pattern, part)
+            if match:
+                value = match.group(1)
+                if field == 'line_number':
+                    value = int(value)
+                issue[field] = value
+        
+        # For code_snippet, use a more permissive pattern
+        snippet_match = re.search(r'"code_snippet"\s*:\s*"(.+?)"\s*[,}]', part, re.DOTALL)
+        if snippet_match:
+            issue['code_snippet'] = snippet_match.group(1)
+        
+        if issue.get('title'):
+            issues.append(issue)
+    
+    return issues
+
+
+def _convert_to_issue_format(issues_data: list, file_path: str, issue_type: str) -> list:
+    """Convert raw parsed data to our issue format."""
+    issues = []
+    
     for item in issues_data:
         if not isinstance(item, dict):
             continue
@@ -327,18 +401,23 @@ def parse_llm_issues(response: str, file_path: str, issue_type: str) -> list:
                 line_num = 1
         
         # Validate risk level
-        risk_level = item.get("risk_level", "medium").lower()
+        risk_level = str(item.get("risk_level", "medium")).lower()
         if risk_level not in ("critical", "high", "medium", "low"):
             risk_level = "medium"
+        
+        # Ensure non-empty values for required fields (empty string should use default)
+        title = str(item.get("title") or "Unnamed Issue")[:200]
+        description = str(item.get("description") or "No description provided")
+        solution = str(item.get("solution") or "Review and fix the issue")
         
         issue = {
             "location": f"{file_path}:{line_num}",
             "type": issue_type,
             "risk_level": risk_level,
-            "title": str(item.get("title", "Unnamed Issue"))[:200],
-            "description": str(item.get("description", "No description provided")),
+            "title": title,
+            "description": description,
             "code_snippet": str(item.get("code_snippet", ""))[:500],
-            "solution": str(item.get("solution", "Review and fix the issue")),
+            "solution": solution,
             "author": f"{issue_type.capitalize()}Agent (LLM)",
         }
         issues.append(issue)

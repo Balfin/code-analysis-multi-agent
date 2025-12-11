@@ -125,3 +125,12 @@ tmp/
 temp/
 *.tmp
 
+# RAG data (analysis metadata)
+rag_data/
+backend/rag_data/
+*.rag_data/
+
+# Analysis cache and temporary analysis artifacts
+analysis_cache/
+.cache/
+*.cache

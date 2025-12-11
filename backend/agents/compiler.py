@@ -113,15 +113,15 @@ def _persist_issues(issues: List[dict], config: Dict[str, Any]) -> int:
         
         for issue_data in issues:
             try:
-                # Convert to Issue model
+                # Convert to Issue model - ensure non-empty required fields
                 issue = Issue(
-                    location=issue_data.get("location", "unknown:0"),
-                    type=IssueType(issue_data.get("type", "architecture")),
-                    risk_level=RiskLevel(issue_data.get("risk_level", "low")),
-                    title=issue_data.get("title", "Unnamed Issue"),
-                    description=issue_data.get("description", "No description"),
-                    code_snippet=issue_data.get("code_snippet", ""),
-                    solution=issue_data.get("solution", "Review and fix"),
+                    location=issue_data.get("location") or "unknown:0",
+                    type=IssueType(issue_data.get("type") or "architecture"),
+                    risk_level=RiskLevel(issue_data.get("risk_level") or "low"),
+                    title=issue_data.get("title") or "Unnamed Issue",
+                    description=issue_data.get("description") or "No description",
+                    code_snippet=issue_data.get("code_snippet") or "",
+                    solution=issue_data.get("solution") or "Review and fix the issue",
                     author=issue_data.get("author"),
                     related_issues=issue_data.get("related_issues"),
                 )

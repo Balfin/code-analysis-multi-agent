@@ -103,6 +103,71 @@ function AnalysisDashboard() {
     fetchModels()
   }, [])
 
+  // Restore analysis results on mount if issues exist
+  useEffect(() => {
+    const restoreResults = async () => {
+      try {
+        const summary = await apiClient.getIssuesSummary()
+        
+        if (summary.total > 0) {
+          // Try to get analyzed path from issues
+          let analyzedPath = ''
+          try {
+            const issuesResponse = await apiClient.getIssues({ page: 1, pageSize: 1 })
+            if (issuesResponse.issues && issuesResponse.issues.length > 0) {
+              const location = issuesResponse.issues[0].location || ''
+              // Extract directory path if location contains a path
+              // (e.g., "../example_projects/example_python/file.py:15" -> "../example_projects/example_python")
+              const pathMatch = location.match(/^(.+)\/[^/]+:\d+$/)
+              if (pathMatch) {
+                analyzedPath = pathMatch[1]
+              }
+            }
+          } catch (err) {
+            // Ignore errors when fetching path
+            console.error('Failed to extract path from issues:', err)
+          }
+          
+          // Calculate health score
+          const critical = summary.by_risk_level?.critical || 0
+          const high = summary.by_risk_level?.high || 0
+          const medium = summary.by_risk_level?.medium || 0
+          const low = summary.by_risk_level?.low || 0
+          
+          let calculatedHealth = 100
+          calculatedHealth -= Math.min(critical * 15, 60)
+          calculatedHealth -= Math.min(high * 8, 40)
+          calculatedHealth -= Math.min(medium * 3, 30)
+          calculatedHealth -= Math.min(low * 1, 10)
+          calculatedHealth = Math.max(0, Math.min(100, calculatedHealth))
+          
+          // Get files analyzed count (approximate from total issues or use a default)
+          // Note: We don't have exact files_analyzed count from summary, so we'll use a reasonable default
+          const filesAnalyzed = Math.max(1, Math.ceil(summary.total / 10)) // Rough estimate
+          
+          setResults({
+            total: summary.total,
+            security: summary.by_type?.security || 0,
+            performance: summary.by_type?.performance || 0,
+            architecture: summary.by_type?.architecture || 0,
+            healthScore: calculatedHealth,
+            filesAnalyzed: filesAnalyzed,
+            summary: `Found ${summary.total} issues in previously analyzed codebase.`,
+          })
+          
+          if (analyzedPath) {
+            setLastAnalyzedPath(analyzedPath)
+          }
+        }
+      } catch (err) {
+        // Silently fail - don't break UI if summary fetch fails
+        console.error('Failed to restore analysis results:', err)
+      }
+    }
+    
+    restoreResults()
+  }, []) // Only run on mount
+
   const fetchIssueSummary = async () => {
     try {
       const summary = await apiClient.getIssuesSummary()

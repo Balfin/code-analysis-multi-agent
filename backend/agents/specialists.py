@@ -61,12 +61,28 @@ def _get_llm_safe(model_override: Optional[str] = None):
 
 def _invoke_llm_safe(llm, prompt, **kwargs) -> Optional[str]:
     """Safely invoke LLM, returning None on failure."""
+    import json
+    
     try:
         messages = prompt.format_messages(**kwargs)
         response = llm.invoke(messages)
-        return response.content
+        content = response.content
+        
+        # Log if response seems malformed (for debugging)
+        if content and not content.strip().startswith(('[', '{')):
+            logger.debug(f"LLM response may not be JSON: {content[:100]}...")
+        
+        return content
+    except json.JSONDecodeError as e:
+        # JSONDecodeError can occur if langchain tries to parse response as JSON
+        # Try to extract the raw response from the error context if available
+        logger.warning(f"LLM JSON parsing failed at position {e.pos}: {e.msg}")
+        # Return the document that failed parsing - it might still have usable content
+        if hasattr(e, 'doc') and e.doc:
+            return e.doc
+        return None
     except Exception as e:
-        logger.warning(f"LLM invocation failed: {e}")
+        logger.warning(f"LLM invocation failed: {type(e).__name__}: {e}")
         return None
 
 
