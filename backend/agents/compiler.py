@@ -227,7 +227,9 @@ def _generate_llm_executive_summary(
         if not settings.use_llm_analysis:
             return None
         
-        llm = get_llm()
+        # Get model override from config if specified
+        model_override = config.get("model") if config else None
+        llm = get_llm(model_override=model_override)
         
         # Prepare issue summary for context
         critical_issues = [i for i in issues if i.get("risk_level") == "critical"][:5]

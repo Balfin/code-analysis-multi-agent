@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { 
   Shield, 
   Gauge, 
@@ -420,6 +421,7 @@ function IssuesList({ onSelectIssue }) {
                 {selectedIssue.markdown_content ? (
                   <div className="markdown-content">
                     <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
                       components={{
                         h1: ({ children }) => <h1 className="text-2xl font-bold text-zinc-100 mb-4">{children}</h1>,
                         h2: ({ children }) => <h2 className="text-xl font-semibold text-zinc-100 mt-6 mb-3">{children}</h2>,
@@ -441,8 +443,17 @@ function IssuesList({ onSelectIssue }) {
                         ),
                         table: ({ children }) => (
                           <div className="overflow-x-auto mb-4">
-                            <table className="w-full text-sm">{children}</table>
+                            <table className="w-full text-sm border-collapse">{children}</table>
                           </div>
+                        ),
+                        thead: ({ children }) => (
+                          <thead className="bg-zinc-800">{children}</thead>
+                        ),
+                        tbody: ({ children }) => (
+                          <tbody>{children}</tbody>
+                        ),
+                        tr: ({ children }) => (
+                          <tr className="border-b border-zinc-700">{children}</tr>
                         ),
                         th: ({ children }) => (
                           <th className="border border-zinc-700 px-3 py-2 text-left bg-zinc-800 font-medium text-zinc-300">{children}</th>

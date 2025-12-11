@@ -136,9 +136,13 @@ def setup_langsmith():
         os.environ["LANGCHAIN_TRACING_V2"] = "false"
 
 
-def get_llm():
+def get_llm(model_override: Optional[str] = None):
     """
     Get the configured LLM instance.
+    
+    Args:
+        model_override: Optional model name to use instead of the default.
+                       Only applies to Ollama provider.
     
     Returns:
         LangChain LLM instance (ChatOllama or ChatOpenAI)
@@ -162,11 +166,15 @@ def get_llm():
     else:  # ollama
         from langchain_ollama import ChatOllama
         
+        # Use override model if provided, otherwise use default
+        model_name = model_override if model_override else settings.ollama_model
+        
         return ChatOllama(
-            model=settings.ollama_model,
+            model=model_name,
             base_url=settings.ollama_base_url,
             temperature=settings.llm_temperature,
             num_predict=settings.llm_max_tokens,
+            format=None,  # Avoid format validation errors while allowing prompt-driven output
         )
 
 

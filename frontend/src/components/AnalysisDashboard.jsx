@@ -13,7 +13,9 @@ import {
   Clock,
   RefreshCw,
   XCircle,
-  Activity
+  Activity,
+  Trash2,
+  ChevronDown
 } from 'lucide-react'
 import apiClient from '../api/client'
 
@@ -27,6 +29,11 @@ function AnalysisDashboard() {
   const [taskId, setTaskId] = useState(null)
   const [analysisMode, setAnalysisMode] = useState('sync') // 'sync' or 'async'
   const [lastAnalyzedPath, setLastAnalyzedPath] = useState('')
+  const [isClearing, setIsClearing] = useState(false)
+  const [clearMessage, setClearMessage] = useState(null)
+  const [availableModels, setAvailableModels] = useState([])
+  const [selectedModel, setSelectedModel] = useState('')
+  const [isLoadingModels, setIsLoadingModels] = useState(false)
 
   // Poll for async task status
   useEffect(() => {
@@ -41,12 +48,18 @@ function AnalysisDashboard() {
             setIsAnalyzing(false)
             setTaskId(null)
             setProgress(100)
+            
+            // Determine health score with proper fallback
+            const healthScore = status.health_score !== undefined 
+              ? status.health_score 
+              : (status.issues_found === 0 ? 100 : 50)
+            
             setResults({
               total: status.issues_found || 0,
               security: 0, // Will be updated by fetching summary
               performance: 0,
               architecture: 0,
-              healthScore: status.health_score || 0,
+              healthScore,
               filesAnalyzed: status.files_analyzed || 0,
               summary: status.summary || 'Analysis complete.',
             })
@@ -58,7 +71,7 @@ function AnalysisDashboard() {
             setTaskId(null)
             setError(status.error || 'Analysis failed')
           } else if (status.status === 'running') {
-            setProgress(status.progress || 50)
+            setProgress(prev => status.progress ?? prev)
             setCurrentStatus('Analysis in progress...')
           }
         } catch (err) {
@@ -72,18 +85,53 @@ function AnalysisDashboard() {
     }
   }, [taskId, isAnalyzing])
 
+  // Fetch available models on mount
+  useEffect(() => {
+    const fetchModels = async () => {
+      setIsLoadingModels(true)
+      try {
+        const response = await apiClient.getModels()
+        if (response.models && response.models.length > 0) {
+          setAvailableModels(response.models)
+        }
+      } catch (err) {
+        console.error('Failed to fetch models:', err)
+      } finally {
+        setIsLoadingModels(false)
+      }
+    }
+    fetchModels()
+  }, [])
+
   const fetchIssueSummary = async () => {
     try {
       const summary = await apiClient.getIssuesSummary()
+      
+      // Get issue counts by severity
+      const critical = summary.by_risk_level?.critical || 0
+      const high = summary.by_risk_level?.high || 0
+      const medium = summary.by_risk_level?.medium || 0
+      const low = summary.by_risk_level?.low || 0
+      
+      // Calculate health score from actual issue counts (same formula as backend)
+      let calculatedHealth = 100
+      calculatedHealth -= Math.min(critical * 15, 60)
+      calculatedHealth -= Math.min(high * 8, 40)
+      calculatedHealth -= Math.min(medium * 3, 30)
+      calculatedHealth -= Math.min(low * 1, 10)
+      calculatedHealth = Math.max(0, Math.min(100, calculatedHealth))
+      
       setResults(prev => prev ? {
         ...prev,
         security: summary.by_type?.security || 0,
         performance: summary.by_type?.performance || 0,
         architecture: summary.by_type?.architecture || 0,
-        criticalCount: summary.by_risk_level?.critical || 0,
-        highCount: summary.by_risk_level?.high || 0,
-        mediumCount: summary.by_risk_level?.medium || 0,
-        lowCount: summary.by_risk_level?.low || 0,
+        criticalCount: critical,
+        highCount: high,
+        mediumCount: medium,
+        lowCount: low,
+        // Update health score if we have actual issue data
+        healthScore: summary.total > 0 || prev.healthScore === 0 ? calculatedHealth : prev.healthScore,
       } : null)
     } catch (err) {
       console.error('Failed to fetch summary:', err)
@@ -104,9 +152,15 @@ function AnalysisDashboard() {
     setLastAnalyzedPath(path)
 
     try {
+      // Build analysis options with selected model
+      const analysisOptions = {
+        asyncMode: analysisMode === 'async',
+        model: selectedModel || undefined,  // Only pass if selected
+      }
+
       if (analysisMode === 'async') {
         // Async mode - start and poll
-        const response = await apiClient.startAnalysis(path, { asyncMode: true })
+        const response = await apiClient.startAnalysis(path, analysisOptions)
         setTaskId(response.task_id)
         setCurrentStatus('Analysis started, monitoring progress...')
         setProgress(10)
@@ -120,23 +174,30 @@ function AnalysisDashboard() {
           setProgress(prev => Math.min(prev + 10, 90))
         }, 1000)
 
-        const response = await apiClient.startAnalysis(path, { asyncMode: false })
+        const response = await apiClient.startAnalysis(path, analysisOptions)
         
         clearInterval(progressInterval)
         setProgress(100)
         setCurrentStatus('Analysis complete!')
         setIsAnalyzing(false)
 
-        // Parse the summary to extract health score
+        // Use health score from response, or parse from summary as fallback
         const healthMatch = response.summary?.match(/Health Score:\s*(\d+)/i)
-        const healthScore = healthMatch ? parseInt(healthMatch[1]) : 50
+        const parsedHealthScore = healthMatch ? parseInt(healthMatch[1]) : null
+        
+        // Determine health score: use response value, parsed value, or default to 100 if no issues
+        const healthScore = response.health_score !== undefined 
+          ? response.health_score 
+          : (parsedHealthScore !== null 
+              ? parsedHealthScore 
+              : (response.issues_found === 0 ? 100 : 50))
 
         setResults({
           total: response.issues_found || 0,
           security: 0,
           performance: 0,
           architecture: 0,
-          healthScore: response.health_score || healthScore,
+          healthScore,
           filesAnalyzed: response.files_analyzed || 0,
           summary: response.summary || 'Analysis complete.',
           rawSummary: response.summary,
@@ -174,6 +235,34 @@ function AnalysisDashboard() {
     return { grade: 'F', color: 'text-red-400', bgColor: 'bg-red-500', label: 'Critical' }
   }
 
+  const handleClearIssues = async () => {
+    if (!confirm('Are you sure you want to clear all issues? This action cannot be undone.')) {
+      return
+    }
+
+    setIsClearing(true)
+    setClearMessage(null)
+
+    try {
+      const response = await apiClient.clearAllIssues()
+      setClearMessage({
+        type: 'success',
+        text: response.message || `Cleared ${response.deleted_count} issues`
+      })
+      // Reset results since issues are cleared
+      setResults(null)
+    } catch (err) {
+      setClearMessage({
+        type: 'error',
+        text: err.message || 'Failed to clear issues'
+      })
+    } finally {
+      setIsClearing(false)
+      // Clear message after 5 seconds
+      setTimeout(() => setClearMessage(null), 5000)
+    }
+  }
+
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Input Section */}
@@ -188,16 +277,39 @@ function AnalysisDashboard() {
           </div>
         </div>
 
-        <div className="flex flex-col sm:flex-row gap-3">
-          <input
-            type="text"
-            value={path}
-            onChange={(e) => setPath(e.target.value)}
-            placeholder="../example_projects/example_python"
-            className="input flex-1 font-mono text-sm"
-            disabled={isAnalyzing}
-            onKeyDown={(e) => e.key === 'Enter' && !isAnalyzing && handleAnalyze()}
-          />
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col sm:flex-row gap-3">
+            <input
+              type="text"
+              value={path}
+              onChange={(e) => setPath(e.target.value)}
+              placeholder="../example_projects/example_python"
+              className="input flex-1 font-mono text-sm"
+              disabled={isAnalyzing}
+              onKeyDown={(e) => e.key === 'Enter' && !isAnalyzing && handleAnalyze()}
+            />
+            
+            {/* Model Selector */}
+            {availableModels.length > 0 && (
+              <div className="relative min-w-[180px]">
+                <select
+                  value={selectedModel}
+                  onChange={(e) => setSelectedModel(e.target.value)}
+                  className="w-full appearance-none bg-zinc-800 border border-zinc-700 text-zinc-300 text-sm rounded-lg px-3 py-2.5 pr-8 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent cursor-pointer"
+                  disabled={isAnalyzing}
+                >
+                  <option value="">Default Model</option>
+                  {availableModels.map((model) => (
+                    <option key={model} value={model}>
+                      {model}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 pointer-events-none" />
+              </div>
+            )}
+          </div>
+          
           <div className="flex gap-2">
             {isAnalyzing ? (
               <button
@@ -217,6 +329,19 @@ function AnalysisDashboard() {
                 Start Analysis
               </button>
             )}
+            <button
+              onClick={handleClearIssues}
+              disabled={isAnalyzing || isClearing}
+              className="btn btn-secondary flex items-center gap-2 hover:bg-red-950/50 hover:border-red-800/50 hover:text-red-400 transition-colors"
+              title="Clear all issues"
+            >
+              {isClearing ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Trash2 className="w-4 h-4" />
+              )}
+              Clear Issues
+            </button>
           </div>
         </div>
 
@@ -241,6 +366,26 @@ function AnalysisDashboard() {
             <div>
               <p className="font-medium">Analysis Error</p>
               <p className="text-red-400/80">{error}</p>
+            </div>
+          </div>
+        )}
+
+        {clearMessage && (
+          <div className={`mt-4 flex items-start gap-2 text-sm rounded-lg px-4 py-3 ${
+            clearMessage.type === 'success' 
+              ? 'text-green-400 bg-green-950/30 border border-green-900/50' 
+              : 'text-red-400 bg-red-950/30 border border-red-900/50'
+          }`}>
+            {clearMessage.type === 'success' ? (
+              <CheckCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+            ) : (
+              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+            )}
+            <div>
+              <p className="font-medium">{clearMessage.type === 'success' ? 'Issues Cleared' : 'Clear Failed'}</p>
+              <p className={clearMessage.type === 'success' ? 'text-green-400/80' : 'text-red-400/80'}>
+                {clearMessage.text}
+              </p>
             </div>
           </div>
         )}
@@ -297,43 +442,27 @@ function AnalysisDashboard() {
                 </div>
               </div>
               
-              {/* Health Score */}
-              <div className="flex items-center gap-4">
-                <div className="text-center">
-                  <div className="relative w-20 h-20">
-                    <svg className="w-20 h-20 transform -rotate-90">
-                      <circle
-                        cx="40"
-                        cy="40"
-                        r="36"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="6"
-                        className="text-zinc-800"
-                      />
-                      <circle
-                        cx="40"
-                        cy="40"
-                        r="36"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="6"
-                        strokeDasharray={`${results.healthScore * 2.26} 226`}
-                        className={getHealthGrade(results.healthScore).color}
-                        strokeLinecap="round"
-                      />
-                    </svg>
-                    <div className="absolute inset-0 flex flex-col items-center justify-center">
-                      <span className={`text-xl font-bold ${getHealthGrade(results.healthScore).color}`}>
-                        {results.healthScore}
-                      </span>
-                    </div>
+              <div className="flex items-center gap-3">
+                {/* Model Selector */}
+                {availableModels.length > 0 && (
+                  <div className="relative">
+                    <select
+                      value={selectedModel}
+                      onChange={(e) => setSelectedModel(e.target.value)}
+                      className="appearance-none bg-zinc-800 border border-zinc-700 text-zinc-300 text-sm rounded-lg px-3 py-2 pr-8 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent cursor-pointer"
+                      disabled={isAnalyzing}
+                    >
+                      <option value="">Default Model</option>
+                      {availableModels.map((model) => (
+                        <option key={model} value={model}>
+                          {model}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 pointer-events-none" />
                   </div>
-                  <p className="text-xs text-zinc-500 mt-1">
-                    {getHealthGrade(results.healthScore).label}
-                  </p>
-                </div>
-
+                )}
+                
                 <button
                   onClick={handleAnalyze}
                   className="btn btn-secondary flex items-center gap-2"
@@ -436,34 +565,6 @@ function AnalysisDashboard() {
               </div>
             </div>
           </div>
-
-          {/* Stats Grid - By Severity */}
-          {(results.criticalCount !== undefined) && (
-            <div>
-              <h4 className="text-sm font-medium text-zinc-400 mb-3 flex items-center gap-2">
-                <AlertCircle className="w-4 h-4" />
-                Issues by Severity
-              </h4>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div className="card p-4 text-center border-red-900/30 hover:border-red-800/50 transition-colors">
-                  <span className="text-3xl font-bold text-red-400">{results.criticalCount || 0}</span>
-                  <p className="text-sm text-zinc-500 mt-1">Critical</p>
-                </div>
-                <div className="card p-4 text-center border-orange-900/30 hover:border-orange-800/50 transition-colors">
-                  <span className="text-3xl font-bold text-orange-400">{results.highCount || 0}</span>
-                  <p className="text-sm text-zinc-500 mt-1">High</p>
-                </div>
-                <div className="card p-4 text-center border-yellow-900/30 hover:border-yellow-800/50 transition-colors">
-                  <span className="text-3xl font-bold text-yellow-400">{results.mediumCount || 0}</span>
-                  <p className="text-sm text-zinc-500 mt-1">Medium</p>
-                </div>
-                <div className="card p-4 text-center border-green-900/30 hover:border-green-800/50 transition-colors">
-                  <span className="text-3xl font-bold text-green-400">{results.lowCount || 0}</span>
-                  <p className="text-sm text-zinc-500 mt-1">Low</p>
-                </div>
-              </div>
-            </div>
-          )}
 
           {/* View Issues CTA */}
           <div className="card p-6 bg-gradient-to-r from-indigo-950/30 to-zinc-900 border-indigo-800/30">

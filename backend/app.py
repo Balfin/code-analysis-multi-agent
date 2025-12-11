@@ -15,6 +15,7 @@ Endpoints:
 
 import asyncio
 import os
+import subprocess
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -60,6 +61,10 @@ class AnalysisRequest(BaseModel):
     async_mode: bool = Field(
         default=False,
         description="If true, returns immediately with task ID for polling"
+    )
+    model: Optional[str] = Field(
+        default=None,
+        description="Ollama model to use for analysis (uses default if not specified)"
     )
 
 
@@ -258,6 +263,44 @@ async def health_check():
     }
 
 
+@app.get("/models", tags=["Info"])
+async def list_models():
+    """
+    List available Ollama models.
+    
+    Returns a list of model names that can be used for analysis.
+    """
+    try:
+        result = subprocess.run(
+            ["ollama", "list"],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        if result.returncode != 0:
+            return {"models": [], "error": "Failed to get models from Ollama"}
+        
+        # Parse the output: first line is header, rest are models
+        lines = result.stdout.strip().split('\n')
+        models = []
+        
+        for line in lines[1:]:  # Skip header line
+            if line.strip():
+                # Model name is the first column (before whitespace)
+                model_name = line.split()[0]
+                models.append(model_name)
+        
+        return {"models": models}
+        
+    except subprocess.TimeoutExpired:
+        return {"models": [], "error": "Timeout getting models from Ollama"}
+    except FileNotFoundError:
+        return {"models": [], "error": "Ollama is not installed or not in PATH"}
+    except Exception as e:
+        return {"models": [], "error": str(e)}
+
+
 # -----------------------------------------------------------------------------
 # Analysis Endpoints
 # -----------------------------------------------------------------------------
@@ -283,7 +326,10 @@ async def analyze_codebase(
             detail=f"Path does not exist: {request.path}"
         )
     
-    config = {"issues_dir": ISSUES_DIR}
+    config = {
+        "issues_dir": ISSUES_DIR,
+        "model": request.model,  # Pass selected model to analysis
+    }
     
     if request.async_mode:
         # Async mode: start background task
@@ -545,6 +591,24 @@ async def delete_issue(issue_id: str):
         )
     
     return {"status": "deleted", "id": issue_id}
+
+
+@app.delete("/issues", tags=["Issues"])
+async def clear_all_issues():
+    """
+    Delete all issues and clear the issues folder.
+    
+    This removes all issue markdown files and clears the index.
+    Use with caution as this action cannot be undone.
+    """
+    store = get_issue_store()
+    count = store.clear()
+    
+    return {
+        "status": "cleared",
+        "deleted_count": count,
+        "message": f"Successfully deleted {count} issues"
+    }
 
 
 # -----------------------------------------------------------------------------

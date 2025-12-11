@@ -74,6 +74,14 @@ export async function checkHealth() {
   return apiRequest('/health')
 }
 
+/**
+ * Get list of available Ollama models
+ * @returns {Promise<{models: string[], error?: string}>}
+ */
+export async function getModels() {
+  return apiRequest('/models')
+}
+
 // =============================================================================
 // Analysis
 // =============================================================================
@@ -84,16 +92,24 @@ export async function checkHealth() {
  * @param {Object} options - Analysis options
  * @param {string[]} options.fileTypes - File patterns to analyze (default: ["*.py"])
  * @param {boolean} options.asyncMode - Run in background (default: false)
+ * @param {string} options.model - Ollama model to use for analysis
  * @returns {Promise<Object>} Analysis results or task ID
  */
 export async function startAnalysis(path, options = {}) {
+  const body = {
+    path,
+    file_types: options.fileTypes || ['*.py'],
+    async_mode: options.asyncMode || false,
+  }
+  
+  // Only include model if specified
+  if (options.model) {
+    body.model = options.model
+  }
+  
   return apiRequest('/analyze', {
     method: 'POST',
-    body: JSON.stringify({
-      path,
-      file_types: options.fileTypes || ['*.py'],
-      async_mode: options.asyncMode || false,
-    }),
+    body: JSON.stringify(body),
   })
 }
 
@@ -163,6 +179,16 @@ export async function deleteIssue(issueId) {
   })
 }
 
+/**
+ * Clear all issues from the issues folder
+ * @returns {Promise<{status: string, deleted_count: number, message: string}>}
+ */
+export async function clearAllIssues() {
+  return apiRequest('/issues', {
+    method: 'DELETE',
+  })
+}
+
 // =============================================================================
 // Chat
 // =============================================================================
@@ -190,12 +216,14 @@ export async function sendChatMessage(message, context = null) {
 
 const apiClient = {
   checkHealth,
+  getModels,
   startAnalysis,
   getAnalysisStatus,
   getIssues,
   getIssuesSummary,
   getIssueDetail,
   deleteIssue,
+  clearAllIssues,
   sendChatMessage,
   APIError,
 }

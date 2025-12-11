@@ -40,8 +40,12 @@ logger = logging.getLogger(__name__)
 # LLM Integration Helpers
 # =============================================================================
 
-def _get_llm_safe():
-    """Safely get LLM instance, returning None if unavailable."""
+def _get_llm_safe(model_override: Optional[str] = None):
+    """Safely get LLM instance, returning None if unavailable.
+    
+    Args:
+        model_override: Optional model name to use instead of the default.
+    """
     try:
         from config import get_settings, get_llm
         settings = get_settings()
@@ -49,7 +53,7 @@ def _get_llm_safe():
         if not settings.use_llm_analysis:
             return None
         
-        return get_llm()
+        return get_llm(model_override=model_override)
     except Exception as e:
         logger.warning(f"Failed to initialize LLM: {e}")
         return None
@@ -175,8 +179,12 @@ def security_node(state: Dict[str, Any]) -> Dict[str, Any]:
     classes = _extract_classes_impl(content)
     imports = _extract_imports_impl(content)
     
+    # Get model from config if specified
+    config = state.get("config", {})
+    model_override = config.get("model")
+    
     # Try LLM-based analysis first
-    llm = _get_llm_safe()
+    llm = _get_llm_safe(model_override=model_override)
     if llm:
         try:
             prompt = get_security_prompt()
@@ -351,8 +359,12 @@ def performance_node(state: Dict[str, Any]) -> Dict[str, Any]:
     functions = _extract_functions_impl(content)
     classes = _extract_classes_impl(content)
     
+    # Get model from config if specified
+    config = state.get("config", {})
+    model_override = config.get("model")
+    
     # Try LLM-based analysis first
-    llm = _get_llm_safe()
+    llm = _get_llm_safe(model_override=model_override)
     if llm:
         try:
             prompt = get_performance_prompt()
@@ -529,8 +541,12 @@ def architecture_node(state: Dict[str, Any]) -> Dict[str, Any]:
     classes = _extract_classes_impl(content)
     metrics = _get_code_metrics_impl(content)
     
+    # Get model from config if specified
+    config = state.get("config", {})
+    model_override = config.get("model")
+    
     # Try LLM-based analysis first
-    llm = _get_llm_safe()
+    llm = _get_llm_safe(model_override=model_override)
     if llm:
         try:
             prompt = get_architecture_prompt()
