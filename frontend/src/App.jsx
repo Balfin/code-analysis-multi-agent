@@ -7,11 +7,13 @@ import {
   FolderSearch, 
   Menu, 
   X,
-  Activity 
+  Activity,
+  FileText
 } from 'lucide-react'
 import AnalysisDashboard from './components/AnalysisDashboard'
 import IssuesList from './components/IssuesList'
 import ChatPanel from './components/ChatPanel'
+import ReportGenerator from './components/ReportGenerator'
 
 function App() {
   const [activeView, setActiveView] = useState('dashboard')
@@ -23,6 +25,7 @@ function App() {
     { id: 'dashboard', label: 'Dashboard', icon: FolderSearch, description: 'Analyze codebase' },
     { id: 'issues', label: 'Issues', icon: Shield, description: 'Browse findings' },
     { id: 'chat', label: 'Chat', icon: MessageSquare, description: 'Ask questions' },
+    { id: 'report', label: 'Generate Report', icon: FileText, description: 'Generate issue reports' },
   ]
 
   // Check backend health
@@ -62,6 +65,8 @@ function App() {
         return <IssuesList onSelectIssue={handleSelectIssue} />
       case 'chat':
         return <ChatPanel selectedIssue={selectedIssue} />
+      case 'report':
+        return <ReportGenerator />
       default:
         return <AnalysisDashboard />
     }

@@ -223,6 +223,31 @@ export async function sendChatMessage(message, context = null, model = null) {
 }
 
 // =============================================================================
+// Reports
+// =============================================================================
+
+/**
+ * Generate a report from issues
+ * @param {string} prompt - Report generation prompt
+ * @param {string} model - Optional model name to use
+ * @returns {Promise<{files: Array<{url: string, filename: string, format: string, size?: number}>}>}
+ */
+export async function generateReport(prompt, model = null) {
+  const body = {
+    prompt,
+  }
+  
+  if (model) {
+    body.model = model
+  }
+  
+  return apiRequest('/reports/generate', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+// =============================================================================
 // Export default client object
 // =============================================================================
 
@@ -237,6 +262,7 @@ const apiClient = {
   deleteIssue,
   clearAllIssues,
   sendChatMessage,
+  generateReport,
   APIError,
 }
 

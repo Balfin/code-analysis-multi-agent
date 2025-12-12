@@ -20,10 +20,12 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from models.issue import IssueStore, IssueType, RiskLevel
@@ -39,6 +41,7 @@ from agents.graph import run_analysis
 _BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_BACKEND_DIR)
 ISSUES_DIR = os.getenv("ISSUES_DIR", os.path.join(_PROJECT_ROOT, "issues"))
+REPORTS_DIR = os.getenv("REPORTS_DIR", os.path.join(_PROJECT_ROOT, "reports"))
 
 # Thread pool for running sync analysis in background
 executor = ThreadPoolExecutor(max_workers=2)
@@ -144,6 +147,28 @@ class ChatResponse(BaseModel):
     responses: Optional[dict[str, dict[str, Any]]] = None
 
 
+class ReportRequest(BaseModel):
+    """Request model for report generation."""
+    prompt: str = Field(..., description="Prompt for generating the report")
+    model: Optional[str] = Field(
+        default=None,
+        description="Ollama model to use for report generation (uses default if not specified)"
+    )
+
+
+class ReportFile(BaseModel):
+    """Model for a generated report file."""
+    url: str = Field(..., description="URL to download the file")
+    filename: str = Field(..., description="Name of the file")
+    format: str = Field(..., description="File format (pdf, doc, md)")
+    size: Optional[int] = Field(default=None, description="File size in bytes")
+
+
+class ReportResponse(BaseModel):
+    """Response model for report generation."""
+    files: list[ReportFile] = Field(..., description="List of generated report files")
+
+
 # =============================================================================
 # FastAPI Application
 # =============================================================================
@@ -184,6 +209,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Note: Static files for reports will be mounted after routes are defined
+# to avoid conflicts with /reports/generate endpoint
 
 
 # =============================================================================
@@ -973,6 +1001,208 @@ Ask me about:
 For more detailed responses, enable LLM integration."""
 
 
+# -----------------------------------------------------------------------------
+# Report Generation Endpoint
+# -----------------------------------------------------------------------------
+
+@app.post("/reports/generate", response_model=ReportResponse, tags=["Reports"])
+async def generate_report(request: ReportRequest):
+    """
+    Generate a report from code analysis issues.
+    
+    The report can be generated in PDF, DOC, or MD formats based on keywords
+    in the prompt (e.g., "generate pdf report" or "in pdf format").
+    
+    - **prompt**: Prompt describing what kind of report to generate
+    - **model**: Optional model name to use for generation
+    """
+    from reports.generator import (
+        detect_formats,
+        generate_report_summary,
+        generate_markdown,
+        save_markdown,
+        generate_pdf,
+        generate_doc,
+    )
+    from models.rag_store import RAGStore
+    from rag.retriever import CodeRetriever
+    from config import get_settings
+    
+    store = get_issue_store()
+    all_issues = store.get_all()
+    summary_stats = store.summary()
+    
+    # Build context similar to chat endpoint
+    context_str = f"""
+Code Analysis Summary:
+- Total Issues: {summary_stats.get('total', 0)}
+- Security Issues: {summary_stats.get('by_type', {}).get('security', 0)}
+- Performance Issues: {summary_stats.get('by_type', {}).get('performance', 0)}
+- Architecture Issues: {summary_stats.get('by_type', {}).get('architecture', 0)}
+- Critical: {summary_stats.get('by_risk_level', {}).get('critical', 0)}
+- High: {summary_stats.get('by_risk_level', {}).get('high', 0)}
+- Medium: {summary_stats.get('by_risk_level', {}).get('medium', 0)}
+- Low: {summary_stats.get('by_risk_level', {}).get('low', 0)}
+"""
+    
+    # Add analyzed folder information if available
+    try:
+        settings = get_settings()
+        rag_store = RAGStore(directory=settings.rag_data_dir)
+        retriever = CodeRetriever(issue_store=store, rag_store=rag_store)
+        folder_info = retriever.get_analyzed_folder_info()
+        if folder_info:
+            context_str += f"""
+Analyzed Folder:
+- Path: {folder_info.get('path', 'Unknown')}
+- Total Files: {folder_info.get('total_files', 0)}
+- Analyzed At: {folder_info.get('analyzed_at', 'Unknown')}
+"""
+    except Exception:
+        pass  # Don't fail if RAG is not available
+    
+    # Add sample of critical issues
+    critical_issues = [i for i in all_issues if i.get("risk_level") == "critical"][:10]
+    if critical_issues:
+        context_str += "\nCritical Issues:\n"
+        for issue in critical_issues:
+            context_str += f"- {issue.get('title')} at {issue.get('location')}\n"
+    
+    # Generate summary using LLM
+    try:
+        summary = generate_report_summary(
+            prompt=request.prompt,
+            context=context_str,
+            model=request.model
+        )
+        if not summary or not summary.strip():
+            raise HTTPException(
+                status_code=500,
+                detail="LLM returned an empty summary"
+            )
+        print(f"Generated summary length: {len(summary)} characters")
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate report summary: {str(e)}"
+        )
+    
+    # Detect formats from prompt
+    formats = detect_formats(request.prompt)
+    print(f"Detected formats from prompt: {formats}")
+    print(f"Prompt snippet: {request.prompt[:200]}...")
+    
+    # If no formats detected, default to markdown
+    if not formats:
+        formats = ['md']
+        print("No formats detected, defaulting to markdown")
+    
+    # Generate markdown content
+    try:
+        markdown_content = generate_markdown(summary, all_issues, summary_stats)
+        if not markdown_content or not markdown_content.strip():
+            raise HTTPException(
+                status_code=500,
+                detail="Generated markdown content is empty"
+            )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate markdown content: {str(e)}"
+        )
+    
+    # Generate files for each detected format
+    generated_files = []
+    errors = []
+    timestamp = datetime.now().strftime('%Y-%m-%dT%H-%M-%S')
+    
+    # Ensure reports directory exists
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+    
+    for fmt in formats:
+        print(f"Attempting to generate {fmt} format...")
+        try:
+            if fmt == 'md':
+                filename = f"report-{timestamp}.md"
+                file_path = Path(REPORTS_DIR) / filename
+                print(f"  Saving markdown to {file_path}")
+                save_markdown(markdown_content, file_path)
+                file_size = file_path.stat().st_size
+                print(f"  Successfully generated {fmt} file: {filename} ({file_size} bytes)")
+                
+            elif fmt == 'pdf':
+                filename = f"report-{timestamp}.pdf"
+                file_path = Path(REPORTS_DIR) / filename
+                print(f"  Generating PDF to {file_path}")
+                generate_pdf(markdown_content, file_path)
+                file_size = file_path.stat().st_size
+                print(f"  Successfully generated {fmt} file: {filename} ({file_size} bytes)")
+                
+            elif fmt == 'doc':
+                filename = f"report-{timestamp}.docx"
+                file_path = Path(REPORTS_DIR) / filename
+                print(f"  Generating DOCX to {file_path}")
+                generate_doc(markdown_content, file_path)
+                file_size = file_path.stat().st_size
+                print(f"  Successfully generated {fmt} file: {filename} ({file_size} bytes)")
+                
+            else:
+                errors.append(f"Unknown format: {fmt}")
+                print(f"  Skipping unknown format: {fmt}")
+                continue  # Skip unknown formats
+            
+            # Create relative URL for download
+            url = f"/reports/files/{filename}"
+            
+            generated_files.append(ReportFile(
+                url=url,
+                filename=filename,
+                format=fmt,
+                size=file_size
+            ))
+            
+        except ImportError as e:
+            error_msg = f"Missing dependency for {fmt} format: {str(e)}"
+            print(f"ERROR: {error_msg}")
+            errors.append(error_msg)
+            # Continue to try other formats
+            continue
+        except Exception as e:
+            error_msg = f"Failed to generate {fmt} format: {str(e)}"
+            print(f"ERROR: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            errors.append(error_msg)
+            # Continue to try other formats even if one fails
+            continue
+    
+    if not generated_files:
+        error_detail = "Failed to generate any report files."
+        if errors:
+            error_detail += f" Errors: {'; '.join(errors)}"
+        else:
+            error_detail += " No formats were detected or generated."
+        raise HTTPException(
+            status_code=500,
+            detail=error_detail
+        )
+    
+    return ReportResponse(files=generated_files)
+
+
+# Mount static files for reports (after route definition to avoid conflicts)
+# This allows downloading generated report files
+try:
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+    app.mount("/reports/files", StaticFiles(directory=REPORTS_DIR), name="reports-files")
+except Exception as e:
+    print(f"Warning: Could not mount reports static files: {e}")
+
+
 # =============================================================================
 # Startup/Shutdown Events
 # =============================================================================
@@ -982,8 +1212,11 @@ async def startup_event():
     """Initialize resources on startup."""
     # Ensure issues directory exists
     os.makedirs(ISSUES_DIR, exist_ok=True)
+    # Ensure reports directory exists
+    os.makedirs(REPORTS_DIR, exist_ok=True)
     print(f"🚀 Code Analysis API started")
     print(f"📁 Issues directory: {ISSUES_DIR}")
+    print(f"📁 Reports directory: {REPORTS_DIR}")
 
 
 @app.on_event("shutdown")
