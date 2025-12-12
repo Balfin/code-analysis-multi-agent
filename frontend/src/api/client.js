@@ -198,8 +198,8 @@ export async function clearAllIssues() {
  * @param {string} message - User's question or message
  * @param {Object} context - Optional context
  * @param {string} context.issueId - ID of issue being discussed
- * @param {string} model - Optional model name to use (uses default if not specified)
- * @returns {Promise<{response: string, issues_referenced: string[], suggestions: string[]}>}
+ * @param {string|string[]} model - Optional model name(s) to use. Can be a single model string or array of models for comparison.
+ * @returns {Promise<{response?: string, issues_referenced?: string[], suggestions?: string[], responses?: Object}>}
  */
 export async function sendChatMessage(message, context = null, model = null) {
   const body = {
@@ -207,8 +207,12 @@ export async function sendChatMessage(message, context = null, model = null) {
     context: context ? { issue_id: context.issueId } : null,
   }
   
-  // Only include model if specified
-  if (model) {
+  // Handle both single model and multiple models
+  if (Array.isArray(model)) {
+    // Multiple models for comparison
+    body.models = model
+  } else if (model) {
+    // Single model (backward compatibility)
     body.model = model
   }
   

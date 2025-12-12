@@ -126,15 +126,22 @@ class ChatRequest(BaseModel):
     )
     model: Optional[str] = Field(
         default=None,
-        description="Ollama model to use for chat (uses default if not specified)"
+        description="Ollama model to use for chat (uses default if not specified). Deprecated: use 'models' instead."
+    )
+    models: Optional[list[str]] = Field(
+        default=None,
+        description="List of Ollama models to use for chat. If not specified, uses 'model' or default."
     )
 
 
 class ChatResponse(BaseModel):
     """Response model for chat endpoint."""
-    response: str
+    # For backward compatibility with single model
+    response: Optional[str] = None
     issues_referenced: Optional[list[str]] = None
     suggestions: Optional[list[str]] = None
+    # For multiple models
+    responses: Optional[dict[str, dict[str, Any]]] = None
 
 
 # =============================================================================
@@ -651,6 +658,82 @@ async def clear_all_issues():
 # Chat Endpoint
 # -----------------------------------------------------------------------------
 
+async def _process_single_model_chat(
+    message: str,
+    context_str: str,
+    model_name: Optional[str],
+    all_issues: list,
+    store: IssueStore
+) -> dict[str, Any]:
+    """Process chat request for a single model and return response dict."""
+    try:
+        from langchain_core.prompts import ChatPromptTemplate
+        from config import get_llm, get_settings
+        
+        settings = get_settings()
+        
+        if settings.use_llm_analysis:
+            llm = get_llm(model_override=model_name)
+            
+            # Enhanced system prompt with RAG context
+            system_prompt = """You are a helpful code analysis assistant. You help developers understand
+and fix code issues found during automated analysis.
+
+You have access to the following context about the codebase:
+{context}
+
+Be helpful, concise, and provide actionable advice. When referencing code, use the specific
+file locations and code snippets provided. If asked about specific issues, reference them
+by title and location. If asked for recommendations, prioritize critical and high-risk
+issues first. Use the retrieved code context to provide detailed, accurate answers about
+the codebase."""
+            
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", system_prompt),
+                ("human", "{message}")
+            ])
+            
+            messages = prompt.format_messages(
+                context=context_str,
+                message=message
+            )
+            
+            response = llm.invoke(messages)
+            
+            # Find referenced issues
+            issues_referenced = []
+            for issue in all_issues[:20]:  # Check first 20 issues
+                issue_title = issue.get('title', '').lower() if isinstance(issue, dict) else issue.title.lower()
+                if issue_title and issue_title in response.content.lower():
+                    issue_id = issue.get('id') if isinstance(issue, dict) else issue.id
+                    issues_referenced.append(issue_id)
+            
+            return {
+                "response": response.content,
+                "issues_referenced": issues_referenced if issues_referenced else None,
+                "suggestions": None
+            }
+    
+    except Exception as e:
+        # Fall back to simple response
+        print(f"Warning: LLM chat failed for model {model_name}: {e}")
+        pass
+    
+    # Simple fallback response without LLM
+    summary = store.summary()
+    fallback_response = _generate_fallback_response(
+        message=message,
+        summary=summary,
+        all_issues=all_issues
+    )
+    
+    return {
+        "response": fallback_response,
+        "issues_referenced": None,
+        "suggestions": ["Enable LLM for more detailed responses"]
+    }
+
+
 @app.post("/chat", response_model=ChatResponse, tags=["Chat"])
 async def chat_about_issues(request: ChatRequest):
     """
@@ -659,6 +742,8 @@ async def chat_about_issues(request: ChatRequest):
     Send a question about the codebase or issues and get an AI-powered response.
     Context can include the current issue being viewed for more relevant answers.
     Uses RAG to retrieve relevant code context from the analyzed folder.
+    
+    Supports multiple models for comparison. Provide 'models' list to get responses from multiple models.
     """
     store = get_issue_store()
     
@@ -675,7 +760,7 @@ async def chat_about_issues(request: ChatRequest):
     rag_store = RAGStore(directory=settings.rag_data_dir)
     retriever = CodeRetriever(issue_store=store, rag_store=rag_store)
     
-    # Build context string
+    # Build context string (shared across all models)
     context_str = f"""
 Code Analysis Summary:
 - Total Issues: {summary.get('total', 0)}
@@ -759,72 +844,73 @@ Current Issue Context:
         for issue in critical_issues:
             context_str += f"- {issue.get('title')} at {issue.get('location')}\n"
     
-    # Try to use LLM for response
-    try:
-        from langchain_core.prompts import ChatPromptTemplate
-        from config import get_llm
-        
-        if settings.use_llm_analysis:
-            # Use model from request if provided, otherwise use default
-            model_override = request.model if request.model else None
-            llm = get_llm(model_override=model_override)
-            
-            # Enhanced system prompt with RAG context
-            system_prompt = """You are a helpful code analysis assistant. You help developers understand
-and fix code issues found during automated analysis.
-
-You have access to the following context about the codebase:
-{context}
-
-Be helpful, concise, and provide actionable advice. When referencing code, use the specific
-file locations and code snippets provided. If asked about specific issues, reference them
-by title and location. If asked for recommendations, prioritize critical and high-risk
-issues first. Use the retrieved code context to provide detailed, accurate answers about
-the codebase."""
-            
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", system_prompt),
-                ("human", "{message}")
-            ])
-            
-            messages = prompt.format_messages(
-                context=context_str,
-                message=request.message
+    # Determine which models to use
+    models_to_use = []
+    if request.models:
+        models_to_use = request.models
+    elif request.model:
+        models_to_use = [request.model]
+    else:
+        models_to_use = [None]  # Use default model
+    
+    # Process all models in parallel
+    tasks = [
+        _process_single_model_chat(
+            message=request.message,
+            context_str=context_str,
+            model_name=model_name,
+            all_issues=all_issues,
+            store=store
+        )
+        for model_name in models_to_use
+    ]
+    
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Build response
+    if len(models_to_use) == 1:
+        # Single model: return backward-compatible format
+        result = results[0]
+        if isinstance(result, Exception):
+            # Error occurred, return fallback
+            fallback_response = _generate_fallback_response(
+                message=request.message,
+                summary=summary,
+                all_issues=all_issues
             )
-            
-            response = llm.invoke(messages)
-            
-            # Find referenced issues
-            issues_referenced = []
-            for issue in all_issues[:20]:  # Check first 20 issues
-                issue_title = issue.get('title', '').lower() if isinstance(issue, dict) else issue.title.lower()
-                if issue_title and issue_title in response.content.lower():
-                    issue_id = issue.get('id') if isinstance(issue, dict) else issue.id
-                    issues_referenced.append(issue_id)
-            
             return ChatResponse(
-                response=response.content,
-                issues_referenced=issues_referenced if issues_referenced else None,
-                suggestions=None
+                response=fallback_response,
+                issues_referenced=None,
+                suggestions=["Enable LLM for more detailed responses"]
             )
-    
-    except Exception as e:
-        # Fall back to simple response
-        print(f"Warning: LLM chat failed: {e}")
-        pass
-    
-    # Simple fallback response without LLM
-    fallback_response = _generate_fallback_response(
-        message=request.message,
-        summary=summary,
-        all_issues=all_issues
-    )
-    
-    return ChatResponse(
-        response=fallback_response,
-        issues_referenced=None,
-        suggestions=["Enable LLM for more detailed responses"]
-    )
+        
+        return ChatResponse(
+            response=result["response"],
+            issues_referenced=result["issues_referenced"],
+            suggestions=result["suggestions"]
+        )
+    else:
+        # Multiple models: return responses dict
+        responses_dict = {}
+        for idx, (model_name, result) in enumerate(zip(models_to_use, results)):
+            model_key = model_name if model_name else "default"
+            
+            if isinstance(result, Exception):
+                # Error occurred for this model
+                fallback_response = _generate_fallback_response(
+                    message=request.message,
+                    summary=summary,
+                    all_issues=all_issues
+                )
+                responses_dict[model_key] = {
+                    "response": f"Error: {str(result)}",
+                    "issues_referenced": None,
+                    "suggestions": ["Enable LLM for more detailed responses"]
+                }
+            else:
+                responses_dict[model_key] = result
+        
+        return ChatResponse(responses=responses_dict)
 
 
 def _generate_fallback_response(
