@@ -134,3 +134,9 @@ backend/rag_data/
 analysis_cache/
 .cache/
 *.cache
+
+# Generated reports
+reports/report-*.md
+reports/report-*.docx
+reports/report-*.pdf
+reports/report-*
