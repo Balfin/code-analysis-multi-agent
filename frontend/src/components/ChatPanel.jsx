@@ -15,7 +15,8 @@ import {
   Clock,
   Download,
   Copy,
-  Check
+  Check,
+  ChevronDown
 } from 'lucide-react'
 import apiClient from '../api/client'
 
@@ -74,6 +75,9 @@ function ChatPanel({ selectedIssue }) {
   const [error, setError] = useState(null)
   const [copiedMessageId, setCopiedMessageId] = useState(null)
   const [showTimestamps, setShowTimestamps] = useState(true)
+  const [selectedModel, setSelectedModel] = useState(null) // null means use default
+  const [availableModels, setAvailableModels] = useState([])
+  const [isLoadingModels, setIsLoadingModels] = useState(false)
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
   const lastIssueIdRef = useRef(null)
@@ -89,6 +93,25 @@ function ChatPanel({ selectedIssue }) {
   // Focus input on mount
   useEffect(() => {
     inputRef.current?.focus()
+  }, [])
+
+  // Fetch available models on mount
+  useEffect(() => {
+    const fetchModels = async () => {
+      setIsLoadingModels(true)
+      try {
+        const response = await apiClient.getModels()
+        if (response.models && Array.isArray(response.models)) {
+          setAvailableModels(response.models)
+        }
+      } catch (err) {
+        console.error('Failed to fetch models:', err)
+        // Don't show error to user, just continue with default
+      } finally {
+        setIsLoadingModels(false)
+      }
+    }
+    fetchModels()
   }, [])
 
   // When a new issue is selected, offer context
@@ -142,7 +165,8 @@ function ChatPanel({ selectedIssue }) {
     try {
       // Call the real chat API
       const context = selectedIssue ? { issueId: selectedIssue.id } : null
-      const response = await apiClient.sendChatMessage(messageToSend, context)
+      // Pass selectedModel (null means use default)
+      const response = await apiClient.sendChatMessage(messageToSend, context, selectedModel)
 
       const assistantMessage = {
         id: Date.now() + 1,
@@ -465,6 +489,28 @@ function ChatPanel({ selectedIssue }) {
 
         {/* Input Area */}
         <div className="border-t border-zinc-800 p-4">
+          {/* Model Selector */}
+          <div className="mb-3">
+            <label className="text-xs text-zinc-500 mb-1.5 block">Model</label>
+            <div className="relative isolate">
+              <select
+                value={selectedModel || 'default'}
+                onChange={(e) => setSelectedModel(e.target.value === 'default' ? null : e.target.value)}
+                disabled={isLoadingModels || isLoading}
+                className="input text-sm pr-8 appearance-none cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed w-full bg-zinc-900"
+              >
+                <option value="default">Default</option>
+                {availableModels.map((model) => (
+                  <option key={model} value={model}>
+                    {model}
+                  </option>
+                ))}
+              </select>
+              <div className="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none">
+                <ChevronDown className="w-4 h-4 text-zinc-400" />
+              </div>
+            </div>
+          </div>
           <div className="flex gap-3">
             <div className="flex flex-col gap-1">
               <button
@@ -482,7 +528,7 @@ function ChatPanel({ selectedIssue }) {
                 <Download className="w-4 h-4" />
               </button>
             </div>
-            <div className="flex-1 relative">
+            <div className="flex-1 relative flex items-end">
               <textarea
                 ref={inputRef}
                 value={input}
@@ -490,7 +536,7 @@ function ChatPanel({ selectedIssue }) {
                 onKeyDown={handleKeyPress}
                 placeholder="Ask about the code issues..."
                 rows={1}
-                className="input pr-12 resize-none min-h-[42px] max-h-[120px]"
+                className="input pr-12 resize-none min-h-[42px] max-h-[120px] w-full"
                 disabled={isLoading}
                 style={{
                   height: 'auto',
@@ -505,13 +551,17 @@ function ChatPanel({ selectedIssue }) {
                 onClick={() => handleSend()}
                 disabled={!input.trim() || isLoading}
                 className={`
-                  absolute right-2 bottom-2 p-2 rounded-lg
+                  absolute right-2 p-2 rounded-lg
                   transition-all duration-200
                   ${input.trim() && !isLoading
                     ? 'text-indigo-400 hover:bg-indigo-500/20'
                     : 'text-zinc-600 cursor-not-allowed'
                   }
                 `}
+                style={{ 
+                  bottom: '6px',
+                  transform: 'translateY(0)'
+                }}
               >
                 <Send className="w-4 h-4" />
               </button>

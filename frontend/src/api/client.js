@@ -198,15 +198,23 @@ export async function clearAllIssues() {
  * @param {string} message - User's question or message
  * @param {Object} context - Optional context
  * @param {string} context.issueId - ID of issue being discussed
+ * @param {string} model - Optional model name to use (uses default if not specified)
  * @returns {Promise<{response: string, issues_referenced: string[], suggestions: string[]}>}
  */
-export async function sendChatMessage(message, context = null) {
+export async function sendChatMessage(message, context = null, model = null) {
+  const body = {
+    message,
+    context: context ? { issue_id: context.issueId } : null,
+  }
+  
+  // Only include model if specified
+  if (model) {
+    body.model = model
+  }
+  
   return apiRequest('/chat', {
     method: 'POST',
-    body: JSON.stringify({
-      message,
-      context: context ? { issue_id: context.issueId } : null,
-    }),
+    body: JSON.stringify(body),
   })
 }
 

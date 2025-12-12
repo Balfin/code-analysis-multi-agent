@@ -124,6 +124,10 @@ class ChatRequest(BaseModel):
         default=None,
         description="Optional context (e.g., current issue being viewed)"
     )
+    model: Optional[str] = Field(
+        default=None,
+        description="Ollama model to use for chat (uses default if not specified)"
+    )
 
 
 class ChatResponse(BaseModel):
@@ -761,7 +765,9 @@ Current Issue Context:
         from config import get_llm
         
         if settings.use_llm_analysis:
-            llm = get_llm()
+            # Use model from request if provided, otherwise use default
+            model_override = request.model if request.model else None
+            llm = get_llm(model_override=model_override)
             
             # Enhanced system prompt with RAG context
             system_prompt = """You are a helpful code analysis assistant. You help developers understand
