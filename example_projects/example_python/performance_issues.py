@@ -188,3 +188,4 @@ def simulate_network_request(url):
     """Simulated blocking network request."""
     time.sleep(0.1)  # Simulate network latency
     return f"Response from {url}"
+

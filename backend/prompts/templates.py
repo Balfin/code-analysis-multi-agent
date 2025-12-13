@@ -11,234 +11,133 @@ Each prompt is designed to:
 2. Provide clear analysis criteria
 3. Request structured JSON output
 4. Include examples for better responses
+
+Prompts are loaded from prompts_config.yaml for centralized configuration.
 """
+
+import os
+import yaml
+from functools import lru_cache
+from pathlib import Path
+from typing import Dict, Any, Optional
 
 from langchain_core.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
 
 
 # =============================================================================
-# Security Expert Prompts
+# Configuration Loading
 # =============================================================================
 
-SECURITY_SYSTEM_PROMPT = """You are an expert Security Analyst with deep knowledge of:
-- OWASP Top 10 vulnerabilities
-- Secure coding practices
-- Common attack vectors (SQL injection, XSS, CSRF, etc.)
-- Authentication and authorization flaws
-- Cryptographic weaknesses
-- Input validation and sanitization
+def _get_config_path() -> Path:
+    """Get the path to the prompts configuration file."""
+    # Get the directory where this file is located (backend/prompts/)
+    current_dir = Path(__file__).parent
+    # Look in parent directory (backend/) for prompts_config.yaml
+    config_path = current_dir.parent / "prompts_config.yaml"
+    
+    if not config_path.exists():
+        # Fallback: try in current directory
+        config_path = current_dir / "prompts_config.yaml"
+    
+    return config_path
 
-Your task is to analyze Python code for security vulnerabilities.
 
-ANALYSIS GUIDELINES:
-1. Focus on REAL security issues, not style preferences
-2. Prioritize by actual risk to the application
-3. Consider the context - not all patterns are vulnerabilities
-4. Provide specific, actionable remediation steps
+@lru_cache(maxsize=1)
+def _load_prompts_config() -> Dict[str, Any]:
+    """Load prompts configuration from YAML file. Cached for performance."""
+    config_path = _get_config_path()
+    
+    if not config_path.exists():
+        raise FileNotFoundError(
+            f"Prompts configuration file not found at {config_path}. "
+            "Please ensure prompts_config.yaml exists in the backend directory."
+        )
+    
+    with open(config_path, 'r', encoding='utf-8') as f:
+        config = yaml.safe_load(f)
+    
+    if not config or 'roles' not in config:
+        raise ValueError("Invalid prompts configuration: 'roles' key not found")
+    
+    return config
 
-RISK LEVELS:
-- critical: Immediate exploitation risk (SQL injection, RCE, hardcoded secrets)
-- high: Serious vulnerability requiring urgent fix (XSS, auth bypass)
-- medium: Security weakness that should be addressed (weak crypto, info disclosure)
-- low: Minor security improvement (best practice deviation)
 
-OUTPUT FORMAT:
-Return a JSON array of issues. Each issue MUST have these exact fields:
-- title: Brief description (max 50 chars)
-- risk_level: One of "critical", "high", "medium", "low"
-- line_number: The line number where the issue occurs
-- description: Detailed explanation of the vulnerability
-- code_snippet: The problematic code (max 100 chars)
-- solution: Specific fix recommendation
-
-Example output:
-```json
-[
-  {{
-    "title": "SQL Injection Vulnerability",
-    "risk_level": "critical",
-    "line_number": 15,
-    "description": "User input is directly interpolated into SQL query, allowing attackers to manipulate the database.",
-    "code_snippet": "query = f\"SELECT * FROM users WHERE id = '{{user_id}}'\"",
-    "solution": "Use parameterized queries: cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))"
-  }}
-]
-```
-
-If no security issues are found, return an empty array: []
-Do NOT include any text before or after the JSON array."""
-
-SECURITY_HUMAN_PROMPT = """Analyze this Python code for security vulnerabilities:
-
-FILE: {file_path}
-
-```python
-{code}
-```
-
-CONTEXT:
-- Functions in file: {functions}
-- Classes in file: {classes}
-- Imports: {imports}
-
-Return ONLY a JSON array of security issues found. No other text."""
+def _get_role_config(role_type: str) -> Dict[str, Any]:
+    """Get configuration for a specific role type."""
+    config = _load_prompts_config()
+    
+    for role in config.get('roles', []):
+        if role.get('type') == role_type:
+            return role
+    
+    raise ValueError(f"Role type '{role_type}' not found in configuration")
 
 
 # =============================================================================
-# Performance Analyst Prompts
+# Prompt String Accessors (for backward compatibility)
 # =============================================================================
 
-PERFORMANCE_SYSTEM_PROMPT = """You are an expert Performance Engineer with deep knowledge of:
-- Algorithm complexity analysis (Big O notation)
-- Database query optimization
-- Memory management and profiling
-- Caching strategies
-- Async/concurrent programming
-- Python-specific performance patterns
-
-Your task is to analyze Python code for performance issues.
-
-ANALYSIS GUIDELINES:
-1. Focus on issues that cause measurable performance impact
-2. Consider scalability - what happens with 10x, 100x data?
-3. Look for common anti-patterns (N+1 queries, blocking I/O, etc.)
-4. Prioritize by potential performance impact
-
-RISK LEVELS:
-- critical: Severe performance issue (O(n²) in hot path, unbounded queries)
-- high: Significant bottleneck (N+1 queries, blocking in async)
-- medium: Performance improvement opportunity (inefficient algorithm)
-- low: Minor optimization (micro-optimization, style)
-
-COMMON PATTERNS TO DETECT:
-- N+1 query patterns (queries in loops)
-- SELECT * without limits
-- String concatenation in loops
-- Nested loops with O(n²) or worse
-- Synchronous I/O in async context
-- Missing caching for repeated computations
-- Large object copies instead of references
-- Inefficient data structure choices
-
-OUTPUT FORMAT:
-Return a JSON array of issues. Each issue MUST have these exact fields:
-- title: Brief description (max 50 chars)
-- risk_level: One of "critical", "high", "medium", "low"
-- line_number: The line number where the issue occurs
-- description: Detailed explanation of the performance impact
-- code_snippet: The problematic code (max 100 chars)
-- solution: Specific optimization recommendation
-
-Example output:
-```json
-[
-  {{
-    "title": "N+1 Query Pattern",
-    "risk_level": "high",
-    "line_number": 42,
-    "description": "Database query inside loop causes N+1 problem. For 1000 users, this executes 1001 queries.",
-    "code_snippet": "for user in users: posts = db.query(f'SELECT...')",
-    "solution": "Use eager loading: users = db.query(User).options(joinedload(User.posts)).all()"
-  }}
-]
-```
-
-If no performance issues are found, return an empty array: []
-Do NOT include any text before or after the JSON array."""
-
-PERFORMANCE_HUMAN_PROMPT = """Analyze this Python code for performance issues:
-
-FILE: {file_path}
-
-```python
-{code}
-```
-
-CODE METRICS:
-- Lines of code: {lines_code}
-- Functions: {functions_count}
-- Classes: {classes_count}
-- Complexity estimate: {complexity}
-
-Return ONLY a JSON array of performance issues found. No other text."""
+def _get_prompt_string(role_type: str, prompt_type: str) -> str:
+    """Get a prompt string from configuration."""
+    role_config = _get_role_config(role_type)
+    
+    if prompt_type == 'system':
+        return role_config.get('system_prompt', '')
+    elif prompt_type == 'human':
+        return role_config.get('human_prompt_template', '')
+    else:
+        raise ValueError(f"Invalid prompt type: {prompt_type}")
 
 
-# =============================================================================
-# Architecture Specialist Prompts
-# =============================================================================
+# Exported constants for backward compatibility
+def _get_security_system_prompt() -> str:
+    """Get security system prompt from config."""
+    return _get_prompt_string('security', 'system')
 
-ARCHITECTURE_SYSTEM_PROMPT = """You are an expert Software Architect with deep knowledge of:
-- SOLID principles
-- Design patterns (Gang of Four, enterprise patterns)
-- Clean code practices
-- Code organization and modularity
-- Error handling best practices
-- Python idioms and conventions
 
-Your task is to analyze Python code for architecture and design issues.
+def _get_security_human_prompt() -> str:
+    """Get security human prompt from config."""
+    return _get_prompt_string('security', 'human')
 
-ANALYSIS GUIDELINES:
-1. Focus on maintainability and code quality
-2. Consider the long-term impact of design decisions
-3. Look for violations of clean code principles
-4. Identify code smells and anti-patterns
 
-RISK LEVELS:
-- critical: Severe design flaw (god class, circular dependencies)
-- high: Significant maintainability issue (SOLID violation, tight coupling)
-- medium: Code quality improvement (long methods, magic numbers)
-- low: Minor improvement (naming, documentation)
+def _get_performance_system_prompt() -> str:
+    """Get performance system prompt from config."""
+    return _get_prompt_string('performance', 'system')
 
-PRINCIPLES TO CHECK:
-- Single Responsibility Principle (classes/functions doing too much)
-- Open/Closed Principle (hard to extend without modification)
-- Dependency Inversion (concrete dependencies instead of abstractions)
-- DRY violations (duplicated logic)
-- Error handling (bare except, swallowed exceptions)
-- Code organization (god classes, feature envy)
-- Naming (unclear names, magic numbers)
 
-OUTPUT FORMAT:
-Return a JSON array of issues. Each issue MUST have these exact fields:
-- title: Brief description (max 50 chars)
-- risk_level: One of "critical", "high", "medium", "low"
-- line_number: The line number where the issue occurs
-- description: Detailed explanation of the design problem
-- code_snippet: The problematic code (max 100 chars)
-- solution: Specific refactoring recommendation
+def _get_performance_human_prompt() -> str:
+    """Get performance human prompt from config."""
+    return _get_prompt_string('performance', 'human')
 
-Example output:
-```json
-[
-  {{
-    "title": "God Class - Too Many Responsibilities",
-    "risk_level": "high",
-    "line_number": 1,
-    "description": "UserManager class handles authentication, authorization, profile management, and notifications. This violates SRP.",
-    "code_snippet": "class UserManager: # 500 lines, 25 methods",
-    "solution": "Split into focused classes: AuthService, ProfileService, NotificationService"
-  }}
-]
-```
 
-If no architecture issues are found, return an empty array: []
-Do NOT include any text before or after the JSON array."""
+def _get_architecture_system_prompt() -> str:
+    """Get architecture system prompt from config."""
+    return _get_prompt_string('architecture', 'system')
 
-ARCHITECTURE_HUMAN_PROMPT = """Analyze this Python code for architecture and design issues:
 
-FILE: {file_path}
+def _get_architecture_human_prompt() -> str:
+    """Get architecture human prompt from config."""
+    return _get_prompt_string('architecture', 'human')
 
-```python
-{code}
-```
 
-STRUCTURE:
-- Functions: {functions}
-- Classes: {classes}
-- Total lines: {lines_total}
-- Code lines: {lines_code}
+# Backward compatibility: Export as module-level constants (lazy-loaded)
+# These are accessed via __getattr__ to load from config on first access
 
-Return ONLY a JSON array of architecture issues found. No other text."""
+def __getattr__(name: str) -> str:
+    """Dynamic attribute access for prompt constants (lazy loading from config)."""
+    prompt_map = {
+        'SECURITY_SYSTEM_PROMPT': _get_security_system_prompt,
+        'SECURITY_HUMAN_PROMPT': _get_security_human_prompt,
+        'PERFORMANCE_SYSTEM_PROMPT': _get_performance_system_prompt,
+        'PERFORMANCE_HUMAN_PROMPT': _get_performance_human_prompt,
+        'ARCHITECTURE_SYSTEM_PROMPT': _get_architecture_system_prompt,
+        'ARCHITECTURE_HUMAN_PROMPT': _get_architecture_human_prompt,
+    }
+    
+    if name in prompt_map:
+        return prompt_map[name]()
+    
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 
 # =============================================================================
@@ -247,26 +146,47 @@ Return ONLY a JSON array of architecture issues found. No other text."""
 
 def get_security_prompt() -> ChatPromptTemplate:
     """Get the security analysis prompt template."""
+    system_prompt = _get_security_system_prompt()
+    human_prompt = _get_security_human_prompt()
     return ChatPromptTemplate.from_messages([
-        SystemMessagePromptTemplate.from_template(SECURITY_SYSTEM_PROMPT),
-        HumanMessagePromptTemplate.from_template(SECURITY_HUMAN_PROMPT),
+        SystemMessagePromptTemplate.from_template(system_prompt),
+        HumanMessagePromptTemplate.from_template(human_prompt),
     ])
 
 
 def get_performance_prompt() -> ChatPromptTemplate:
     """Get the performance analysis prompt template."""
+    system_prompt = _get_performance_system_prompt()
+    human_prompt = _get_performance_human_prompt()
     return ChatPromptTemplate.from_messages([
-        SystemMessagePromptTemplate.from_template(PERFORMANCE_SYSTEM_PROMPT),
-        HumanMessagePromptTemplate.from_template(PERFORMANCE_HUMAN_PROMPT),
+        SystemMessagePromptTemplate.from_template(system_prompt),
+        HumanMessagePromptTemplate.from_template(human_prompt),
     ])
 
 
 def get_architecture_prompt() -> ChatPromptTemplate:
     """Get the architecture analysis prompt template."""
+    system_prompt = _get_architecture_system_prompt()
+    human_prompt = _get_architecture_human_prompt()
     return ChatPromptTemplate.from_messages([
-        SystemMessagePromptTemplate.from_template(ARCHITECTURE_SYSTEM_PROMPT),
-        HumanMessagePromptTemplate.from_template(ARCHITECTURE_HUMAN_PROMPT),
+        SystemMessagePromptTemplate.from_template(system_prompt),
+        HumanMessagePromptTemplate.from_template(human_prompt),
     ])
+
+
+# =============================================================================
+# Configuration Access Functions
+# =============================================================================
+
+def get_prompts_config() -> Dict[str, Any]:
+    """Get the full prompts configuration."""
+    return _load_prompts_config()
+
+
+def get_all_roles() -> list[Dict[str, Any]]:
+    """Get all role configurations."""
+    config = _load_prompts_config()
+    return config.get('roles', [])
 
 
 # =============================================================================

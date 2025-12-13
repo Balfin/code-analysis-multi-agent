@@ -211,3 +211,4 @@ def long_function_that_does_too_much(user_data, config, options, output_format):
         return f"<user><name>{name}</name><email>{email}</email></user>"
     else:
         return {"name": name, "email": email}
+

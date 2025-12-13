@@ -199,3 +199,4 @@ def late_import_function():
 # Stub functions for the examples
 def compute_value():
     return 1
+

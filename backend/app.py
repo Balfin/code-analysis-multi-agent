@@ -297,6 +297,8 @@ async def root():
         "docs": "/docs",
         "endpoints": {
             "health": "GET /health",
+            "models": "GET /models",
+            "prompts": "GET /prompts",
             "analyze": "POST /analyze",
             "analyze_status": "GET /analyze/{task_id}/status",
             "issues": "GET /issues",
@@ -354,6 +356,38 @@ async def list_models():
         return {"models": [], "error": "Ollama is not installed or not in PATH"}
     except Exception as e:
         return {"models": [], "error": str(e)}
+
+
+@app.get("/prompts", tags=["Info"])
+async def get_prompts():
+    """
+    Get the prompts configuration used for analysis.
+    
+    Returns roles and their associated system and human prompts.
+    """
+    try:
+        from prompts.templates import get_all_roles
+        
+        roles = get_all_roles()
+        
+        # Format roles for response
+        formatted_roles = []
+        for role in roles:
+            formatted_roles.append({
+                "name": role.get("name", ""),
+                "type": role.get("type", ""),
+                "description": role.get("description", ""),
+                "system_prompt": role.get("system_prompt", ""),
+                "human_prompt_template": role.get("human_prompt_template", ""),
+            })
+        
+        return {"roles": formatted_roles}
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load prompts configuration: {str(e)}"
+        )
 
 
 # -----------------------------------------------------------------------------

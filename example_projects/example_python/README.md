@@ -98,3 +98,4 @@ mypy example_python/
 | Error Handling | 15+ |
 | Style | 25+ |
 | **Total** | **100+** |
+

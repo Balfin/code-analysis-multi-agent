@@ -226,3 +226,4 @@ def use_resource(resource):
 
 def release_resource(resource):
     pass
+

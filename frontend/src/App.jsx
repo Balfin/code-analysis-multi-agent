@@ -8,12 +8,14 @@ import {
   Menu, 
   X,
   Activity,
-  FileText
+  FileText,
+  Settings
 } from 'lucide-react'
 import AnalysisDashboard from './components/AnalysisDashboard'
 import IssuesList from './components/IssuesList'
 import ChatPanel from './components/ChatPanel'
 import ReportGenerator from './components/ReportGenerator'
+import PromptConfiguration from './components/PromptConfiguration'
 
 function App() {
   const [activeView, setActiveView] = useState('dashboard')
@@ -23,6 +25,7 @@ function App() {
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: FolderSearch, description: 'Analyze codebase' },
+    { id: 'prompts', label: 'Prompt Configuration', icon: Settings, description: 'View analysis prompts' },
     { id: 'issues', label: 'Issues', icon: Shield, description: 'Browse findings' },
     { id: 'chat', label: 'Chat', icon: MessageSquare, description: 'Ask questions' },
     { id: 'report', label: 'Generate Report', icon: FileText, description: 'Generate issue reports' },
@@ -61,6 +64,8 @@ function App() {
     switch (activeView) {
       case 'dashboard':
         return <AnalysisDashboard />
+      case 'prompts':
+        return <PromptConfiguration />
       case 'issues':
         return <IssuesList onSelectIssue={handleSelectIssue} />
       case 'chat':

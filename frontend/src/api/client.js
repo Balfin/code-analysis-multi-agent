@@ -82,6 +82,14 @@ export async function getModels() {
   return apiRequest('/models')
 }
 
+/**
+ * Get prompts configuration used for analysis
+ * @returns {Promise<{roles: Array<{name: string, type: string, description: string, system_prompt: string, human_prompt_template: string}>}>}
+ */
+export async function getPrompts() {
+  return apiRequest('/prompts')
+}
+
 // =============================================================================
 // Analysis
 // =============================================================================
@@ -254,6 +262,7 @@ export async function generateReport(prompt, model = null) {
 const apiClient = {
   checkHealth,
   getModels,
+  getPrompts,
   startAnalysis,
   getAnalysisStatus,
   getIssues,
