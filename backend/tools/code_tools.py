@@ -426,7 +426,7 @@ def _find_pattern_impl(code: str, pattern: str) -> List[Dict[str, Any]]:
 
 # Common security vulnerability patterns
 SECURITY_PATTERNS = {
-    "sql_injection": r"(execute|cursor\.execute|raw|RawSQL)\s*\([^)]*[\"'].*%s|{.*}|\+.*\+",
+    "sql_injection": r"(execute|cursor\.execute|raw|RawSQL)\s*\([^)]*[\"'].*(?:%s|\{[^}]*\}|\+.*\+).*[\"']",
     "hardcoded_secret": r"(API_KEY|SECRET|PASSWORD|TOKEN|PRIVATE_KEY)\s*=\s*[\"'][^\"']+[\"']",
     "eval_usage": r"\beval\s*\(",
     "exec_usage": r"\bexec\s*\(",
