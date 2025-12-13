@@ -67,7 +67,7 @@ function ChatPanel({ selectedIssue }) {
     {
       id: 1,
       role: 'assistant',
-      content: "Hello! I'm your code analysis assistant. I can help you understand the issues found in your codebase and provide recommendations for fixing them.\n\nYou can ask me questions like:\n- \"What are the most critical issues?\"\n- \"Tell me about security vulnerabilities\"\n- \"How do I fix the N+1 query problem?\"\n\nWhat would you like to know?",
+      content: "Hello! I'm your code analysis assistant. I can help you understand the issues found in your codebase and provide recommendations for fixing them.\n\nYou can ask me questions like:\n- What are the most critical issues?\n- Tell me about security vulnerabilities\n- How do I fix the N+1 query problem?\n\nWhat would you like to know?",
       timestamp: new Date(),
       modelId: 'default',
     },
@@ -311,6 +311,36 @@ function ChatPanel({ selectedIssue }) {
   const formatMessage = (content) => {
     // Simple markdown-like formatting
     return content.split('\n').map((line, idx) => {
+      // List items - handle before other formatting
+      if (line.startsWith('- ')) {
+        // Remove the '- ' prefix and format the rest
+        const listContent = line.substring(2)
+        let formattedLine = listContent.split(/\*\*(.*?)\*\*/g).map((part, i) => 
+          i % 2 === 1 ? <strong key={i} className="text-zinc-100">{part}</strong> : part
+        )
+        
+        // Inline code
+        formattedLine = formattedLine.map((part, i) => {
+          if (typeof part === 'string') {
+            return part.split(/`(.*?)`/g).map((codePart, j) =>
+              j % 2 === 1 ? (
+                <code key={`${i}-${j}`} className="bg-zinc-700 px-1.5 py-0.5 rounded text-indigo-300 text-xs font-mono">
+                  {codePart}
+                </code>
+              ) : codePart
+            )
+          }
+          return part
+        })
+        
+        return (
+          <div key={idx} className="flex gap-2 ml-2">
+            <span className="text-zinc-500">•</span>
+            <span>{formattedLine}</span>
+          </div>
+        )
+      }
+
       // Bold text
       let formattedLine = line.split(/\*\*(.*?)\*\*/g).map((part, i) => 
         i % 2 === 1 ? <strong key={i} className="text-zinc-100">{part}</strong> : part
@@ -329,16 +359,6 @@ function ChatPanel({ selectedIssue }) {
         }
         return part
       })
-
-      // List items
-      if (line.startsWith('- ')) {
-        return (
-          <div key={idx} className="flex gap-2 ml-2">
-            <span className="text-zinc-500">•</span>
-            <span>{formattedLine.slice(1)}</span>
-          </div>
-        )
-      }
 
       // Numbered lists
       const numberedMatch = line.match(/^(\d+)\.\s/)
