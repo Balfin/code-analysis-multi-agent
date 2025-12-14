@@ -197,6 +197,32 @@ export async function clearAllIssues() {
   })
 }
 
+/**
+ * Improve an issue using a custom LLM model
+ * @param {string} issueId - Issue ID to improve
+ * @param {string} model - Model name to use for improvement
+ * @returns {Promise<Object>} Improved issue details with markdown content
+ */
+export async function improveIssue(issueId, model) {
+  return apiRequest(`/issues/${issueId}/improve`, {
+    method: 'POST',
+    body: JSON.stringify({ model }),
+  })
+}
+
+/**
+ * Update/overwrite an issue with new data
+ * @param {string} issueId - Issue ID to update
+ * @param {Object} issueData - Updated issue fields (title, description, solution, etc.)
+ * @returns {Promise<Object>} Updated issue details with markdown content
+ */
+export async function updateIssue(issueId, issueData) {
+  return apiRequest(`/issues/${issueId}`, {
+    method: 'PUT',
+    body: JSON.stringify(issueData),
+  })
+}
+
 // =============================================================================
 // Chat
 // =============================================================================
@@ -270,6 +296,8 @@ const apiClient = {
   getIssueDetail,
   deleteIssue,
   clearAllIssues,
+  improveIssue,
+  updateIssue,
   sendChatMessage,
   generateReport,
   APIError,

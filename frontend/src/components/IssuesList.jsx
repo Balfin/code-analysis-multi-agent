@@ -17,7 +17,9 @@ import {
   Trash2,
   SortAsc,
   SortDesc,
-  ChevronDown
+  ChevronDown,
+  Sparkles,
+  Save
 } from 'lucide-react'
 import apiClient from '../api/client'
 
@@ -54,6 +56,14 @@ function IssuesList({ onSelectIssue }) {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [pageSize] = useState(100)
+  
+  // Issue improvement state
+  const [availableModels, setAvailableModels] = useState([])
+  const [selectedModel, setSelectedModel] = useState('')
+  const [isImproving, setIsImproving] = useState(false)
+  const [improveError, setImproveError] = useState(null)
+  const [improvedIssue, setImprovedIssue] = useState(null)
+  const [activeTab, setActiveTab] = useState('original')
 
   // Fetch issues from API
   const fetchIssues = useCallback(async () => {
@@ -85,6 +95,31 @@ function IssuesList({ onSelectIssue }) {
   useEffect(() => {
     fetchIssues()
   }, [fetchIssues])
+
+  // Fetch available models on mount
+  useEffect(() => {
+    const fetchModels = async () => {
+      try {
+        const response = await apiClient.getModels()
+        if (response.models && Array.isArray(response.models)) {
+          setAvailableModels(response.models)
+          if (response.models.length > 0 && !selectedModel) {
+            setSelectedModel(response.models[0])
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch models:', err)
+      }
+    }
+    fetchModels()
+  }, [])
+
+  // Reset improvement state when issue changes
+  useEffect(() => {
+    setImprovedIssue(null)
+    setActiveTab('original')
+    setImproveError(null)
+  }, [selectedId])
 
   // Sort issues client-side
   const sortedIssues = useMemo(() => {
@@ -161,6 +196,54 @@ function IssuesList({ onSelectIssue }) {
     setTimeout(() => setCopiedId(null), 2000)
   }
 
+  const handleImprove = async () => {
+    if (!selectedIssue || !selectedModel || isImproving) return
+    
+    setIsImproving(true)
+    setImproveError(null)
+    
+    try {
+      const improved = await apiClient.improveIssue(selectedIssue.id, selectedModel)
+      setImprovedIssue(improved)
+      setActiveTab('improved')
+    } catch (err) {
+      setImproveError(err.message || 'Failed to improve issue')
+      console.error('Improve error:', err)
+    } finally {
+      setIsImproving(false)
+    }
+  }
+
+  const handleChooseVersion = async () => {
+    if (!improvedIssue || !selectedIssue) return
+    
+    if (!confirm('Are you sure you want to replace the original issue with the improved version?')) {
+      return
+    }
+    
+    try {
+      // Update the issue with improved data
+      const updated = await apiClient.updateIssue(selectedIssue.id, {
+        title: improvedIssue.title,
+        description: improvedIssue.description,
+        solution: improvedIssue.solution,
+      })
+      
+      // Update local state
+      setSelectedIssue(updated)
+      setImprovedIssue(null)
+      setActiveTab('original')
+      
+      // Refresh issues list to show updated issue
+      fetchIssues()
+      
+      alert('Issue updated successfully!')
+    } catch (err) {
+      alert('Failed to update issue: ' + err.message)
+      console.error('Update error:', err)
+    }
+  }
+
   const clearFilters = () => {
     setTypeFilter('all')
     setRiskFilter('all')
@@ -206,6 +289,163 @@ function IssuesList({ onSelectIssue }) {
   }
 
   const hasFilters = typeFilter !== 'all' || riskFilter !== 'all' || searchQuery
+
+  // Helper function to render issue content
+  const renderIssueContent = (issue) => {
+    if (!issue) return null
+    
+    return (
+      <div className="p-6 space-y-6">
+        {/* Render markdown if available */}
+        {issue.markdown_content ? (
+          <div className="markdown-content">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                h1: ({ children }) => <h1 className="text-2xl font-bold text-zinc-100 mb-4">{children}</h1>,
+                h2: ({ children }) => <h2 className="text-xl font-semibold text-zinc-100 mt-6 mb-3">{children}</h2>,
+                h3: ({ children }) => <h3 className="text-lg font-medium text-zinc-200 mt-4 mb-2">{children}</h3>,
+                p: ({ children }) => <p className="text-zinc-300 mb-4 leading-relaxed">{children}</p>,
+                ul: ({ children }) => <ul className="list-disc pl-6 mb-4 text-zinc-300">{children}</ul>,
+                ol: ({ children }) => <ol className="list-decimal pl-6 mb-4 text-zinc-300">{children}</ol>,
+                li: ({ children }) => <li className="mb-1">{children}</li>,
+                code: ({ inline, children }) => 
+                  inline ? (
+                    <code className="bg-zinc-800 px-1.5 py-0.5 rounded text-sm font-mono text-indigo-300">{children}</code>
+                  ) : (
+                    <code className="text-zinc-300">{children}</code>
+                  ),
+                pre: ({ children }) => (
+                  <pre className="bg-zinc-800 rounded-lg p-4 overflow-x-auto mb-4 text-sm">
+                    {children}
+                  </pre>
+                ),
+                table: ({ children }) => (
+                  <div className="overflow-x-auto mb-4">
+                    <table className="w-full text-sm border-collapse">{children}</table>
+                  </div>
+                ),
+                thead: ({ children }) => (
+                  <thead className="bg-zinc-800">{children}</thead>
+                ),
+                tbody: ({ children }) => (
+                  <tbody>{children}</tbody>
+                ),
+                tr: ({ children }) => (
+                  <tr className="border-b border-zinc-700">{children}</tr>
+                ),
+                th: ({ children }) => (
+                  <th className="border border-zinc-700 px-3 py-2 text-left bg-zinc-800 font-medium text-zinc-300">{children}</th>
+                ),
+                td: ({ children }) => (
+                  <td className="border border-zinc-700 px-3 py-2 text-zinc-400">{children}</td>
+                ),
+                strong: ({ children }) => <strong className="font-semibold text-zinc-100">{children}</strong>,
+                a: ({ children, href }) => (
+                  <a href={href} className="text-indigo-400 hover:underline" target="_blank" rel="noopener noreferrer">{children}</a>
+                ),
+                blockquote: ({ children }) => (
+                  <blockquote className="border-l-4 border-zinc-700 pl-4 italic text-zinc-400 my-4">{children}</blockquote>
+                ),
+                hr: () => <hr className="border-zinc-700 my-6" />,
+              }}
+            >
+              {issue.markdown_content}
+            </ReactMarkdown>
+          </div>
+        ) : (
+          <>
+            {/* Fallback: structured display */}
+            {/* Location */}
+            <div>
+              <h3 className="text-sm font-medium text-zinc-400 mb-2">Location</h3>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 font-mono bg-zinc-800 px-3 py-2 rounded-lg text-zinc-300 text-sm overflow-x-auto">
+                  {issue.location}
+                </code>
+                <button 
+                  className="btn btn-secondary p-2"
+                  title="Open in editor (coming soon)"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Description */}
+            <div>
+              <h3 className="text-sm font-medium text-zinc-400 mb-2">Description</h3>
+              <p className="text-zinc-300 leading-relaxed">
+                {issue.description}
+              </p>
+            </div>
+
+            {/* Code Snippet */}
+            {issue.code_snippet && (
+              <div>
+                <h3 className="text-sm font-medium text-zinc-400 mb-2">Code</h3>
+                <pre className="bg-zinc-800 rounded-lg p-4 overflow-x-auto">
+                  <code className="text-sm font-mono text-zinc-300 whitespace-pre-wrap">
+                    {issue.code_snippet}
+                  </code>
+                </pre>
+              </div>
+            )}
+
+            {/* Solution */}
+            {issue.solution && (
+              <div>
+                <h3 className="text-sm font-medium text-zinc-400 mb-2">Recommended Solution</h3>
+                <div className="bg-green-950/30 border border-green-900/50 rounded-lg p-4">
+                  <p className="text-green-300 text-sm leading-relaxed">
+                    {issue.solution}
+                  </p>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Author */}
+        {issue.author && (
+          <div>
+            <h3 className="text-sm font-medium text-zinc-400 mb-2">Detected By</h3>
+            <span className="badge bg-zinc-800 text-zinc-300">
+              {issue.author}
+            </span>
+          </div>
+        )}
+
+        {/* Issue ID and metadata */}
+        <div className="pt-4 border-t border-zinc-800">
+          <div className="flex items-center justify-between text-xs">
+            <p className="text-zinc-600">
+              Issue ID: <code className="font-mono">{issue.id}</code>
+            </p>
+            <button
+              onClick={() => handleCopyId(issue.id)}
+              className="text-zinc-500 hover:text-zinc-300 flex items-center gap-1"
+            >
+              {copiedId === issue.id ? (
+                <>
+                  <Check className="w-3 h-3" /> Copied!
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3 h-3" /> Copy ID
+                </>
+              )}
+            </button>
+          </div>
+          {issue.created_at && (
+            <p className="text-xs text-zinc-600 mt-1">
+              Created: {new Date(issue.created_at).toLocaleString()}
+            </p>
+          )}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="flex flex-col lg:flex-row gap-6 h-[calc(100vh-200px)] animate-fade-in">
@@ -386,10 +626,10 @@ function IssuesList({ onSelectIssue }) {
               </div>
             </div>
           ) : selectedIssue ? (
-            <div className="h-full overflow-y-auto">
+            <div className="h-full flex flex-col">
               {/* Header */}
-              <div className="p-6 border-b border-zinc-800 bg-zinc-900/50 sticky top-0 z-10">
-                <div className="flex items-start gap-4">
+              <div className="p-6 border-b border-zinc-800 bg-zinc-900/50 flex-shrink-0">
+                <div className="flex items-start gap-4 mb-4">
                   <div className={`p-3 rounded-lg ${getTypeColor(selectedIssue.type)}`}>
                     {getTypeIcon(selectedIssue.type)}
                   </div>
@@ -414,157 +654,101 @@ function IssuesList({ onSelectIssue }) {
                     <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
+                
+                {/* Improve Controls */}
+                <div className="flex items-center gap-3 flex-wrap">
+                  <select
+                    value={selectedModel}
+                    onChange={(e) => setSelectedModel(e.target.value)}
+                    className="input text-sm py-1.5 flex-1 min-w-[150px]"
+                    disabled={isImproving || availableModels.length === 0}
+                  >
+                    {availableModels.length === 0 ? (
+                      <option value="">No models available</option>
+                    ) : (
+                      availableModels.map(model => (
+                        <option key={model} value={model}>{model}</option>
+                      ))
+                    )}
+                  </select>
+                  <button
+                    onClick={handleImprove}
+                    disabled={!selectedModel || isImproving || availableModels.length === 0}
+                    className="btn btn-primary text-sm px-4 py-1.5 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isImproving ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Improving...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-4 h-4" />
+                        Improve
+                      </>
+                    )}
+                  </button>
+                </div>
+                
+                {/* Improve Error */}
+                {improveError && (
+                  <div className="mt-3 p-2 bg-red-950/30 border border-red-900/50 rounded text-sm text-red-400">
+                    {improveError}
+                  </div>
+                )}
               </div>
 
-              <div className="p-6 space-y-6">
-                {/* Render markdown if available */}
-                {selectedIssue.markdown_content ? (
-                  <div className="markdown-content">
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm]}
-                      components={{
-                        h1: ({ children }) => <h1 className="text-2xl font-bold text-zinc-100 mb-4">{children}</h1>,
-                        h2: ({ children }) => <h2 className="text-xl font-semibold text-zinc-100 mt-6 mb-3">{children}</h2>,
-                        h3: ({ children }) => <h3 className="text-lg font-medium text-zinc-200 mt-4 mb-2">{children}</h3>,
-                        p: ({ children }) => <p className="text-zinc-300 mb-4 leading-relaxed">{children}</p>,
-                        ul: ({ children }) => <ul className="list-disc pl-6 mb-4 text-zinc-300">{children}</ul>,
-                        ol: ({ children }) => <ol className="list-decimal pl-6 mb-4 text-zinc-300">{children}</ol>,
-                        li: ({ children }) => <li className="mb-1">{children}</li>,
-                        code: ({ inline, children }) => 
-                          inline ? (
-                            <code className="bg-zinc-800 px-1.5 py-0.5 rounded text-sm font-mono text-indigo-300">{children}</code>
-                          ) : (
-                            <code className="text-zinc-300">{children}</code>
-                          ),
-                        pre: ({ children }) => (
-                          <pre className="bg-zinc-800 rounded-lg p-4 overflow-x-auto mb-4 text-sm">
-                            {children}
-                          </pre>
-                        ),
-                        table: ({ children }) => (
-                          <div className="overflow-x-auto mb-4">
-                            <table className="w-full text-sm border-collapse">{children}</table>
-                          </div>
-                        ),
-                        thead: ({ children }) => (
-                          <thead className="bg-zinc-800">{children}</thead>
-                        ),
-                        tbody: ({ children }) => (
-                          <tbody>{children}</tbody>
-                        ),
-                        tr: ({ children }) => (
-                          <tr className="border-b border-zinc-700">{children}</tr>
-                        ),
-                        th: ({ children }) => (
-                          <th className="border border-zinc-700 px-3 py-2 text-left bg-zinc-800 font-medium text-zinc-300">{children}</th>
-                        ),
-                        td: ({ children }) => (
-                          <td className="border border-zinc-700 px-3 py-2 text-zinc-400">{children}</td>
-                        ),
-                        strong: ({ children }) => <strong className="font-semibold text-zinc-100">{children}</strong>,
-                        a: ({ children, href }) => (
-                          <a href={href} className="text-indigo-400 hover:underline" target="_blank" rel="noopener noreferrer">{children}</a>
-                        ),
-                        blockquote: ({ children }) => (
-                          <blockquote className="border-l-4 border-zinc-700 pl-4 italic text-zinc-400 my-4">{children}</blockquote>
-                        ),
-                        hr: () => <hr className="border-zinc-700 my-6" />,
-                      }}
+              {/* Tabs */}
+              {improvedIssue ? (
+                <>
+                  <div className="border-b border-zinc-800 flex gap-1 px-6 pt-4 flex-shrink-0">
+                    <button
+                      onClick={() => setActiveTab('original')}
+                      className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${
+                        activeTab === 'original'
+                          ? 'border-indigo-500 text-indigo-400'
+                          : 'border-transparent text-zinc-500 hover:text-zinc-300'
+                      }`}
                     >
-                      {selectedIssue.markdown_content}
-                    </ReactMarkdown>
+                      Original
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('improved')}
+                      className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${
+                        activeTab === 'improved'
+                          ? 'border-indigo-500 text-indigo-400'
+                          : 'border-transparent text-zinc-500 hover:text-zinc-300'
+                      }`}
+                    >
+                      Improved
+                    </button>
                   </div>
-                ) : (
-                  <>
-                    {/* Fallback: structured display */}
-                    {/* Location */}
-                    <div>
-                      <h3 className="text-sm font-medium text-zinc-400 mb-2">Location</h3>
-                      <div className="flex items-center gap-2">
-                        <code className="flex-1 font-mono bg-zinc-800 px-3 py-2 rounded-lg text-zinc-300 text-sm overflow-x-auto">
-                          {selectedIssue.location}
-                        </code>
-                        <button 
-                          className="btn btn-secondary p-2"
-                          title="Open in editor (coming soon)"
-                        >
-                          <ExternalLink className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Description */}
-                    <div>
-                      <h3 className="text-sm font-medium text-zinc-400 mb-2">Description</h3>
-                      <p className="text-zinc-300 leading-relaxed">
-                        {selectedIssue.description}
-                      </p>
-                    </div>
-
-                    {/* Code Snippet */}
-                    {selectedIssue.code_snippet && (
+                  
+                  {/* Tab Content */}
+                  <div className="overflow-y-auto flex-1 min-h-0">
+                    {activeTab === 'original' ? (
+                      renderIssueContent(selectedIssue)
+                    ) : (
                       <div>
-                        <h3 className="text-sm font-medium text-zinc-400 mb-2">Code</h3>
-                        <pre className="bg-zinc-800 rounded-lg p-4 overflow-x-auto">
-                          <code className="text-sm font-mono text-zinc-300 whitespace-pre-wrap">
-                            {selectedIssue.code_snippet}
-                          </code>
-                        </pre>
-                      </div>
-                    )}
-
-                    {/* Solution */}
-                    {selectedIssue.solution && (
-                      <div>
-                        <h3 className="text-sm font-medium text-zinc-400 mb-2">Recommended Solution</h3>
-                        <div className="bg-green-950/30 border border-green-900/50 rounded-lg p-4">
-                          <p className="text-green-300 text-sm leading-relaxed">
-                            {selectedIssue.solution}
-                          </p>
+                        {renderIssueContent(improvedIssue)}
+                        <div className="px-6 pb-6 pt-4 border-t border-zinc-800">
+                          <button
+                            onClick={handleChooseVersion}
+                            className="btn btn-primary w-full flex items-center justify-center gap-2"
+                          >
+                            <Save className="w-4 h-4" />
+                            Choose This Version
+                          </button>
                         </div>
                       </div>
                     )}
-                  </>
-                )}
-
-                {/* Author */}
-                {selectedIssue.author && (
-                  <div>
-                    <h3 className="text-sm font-medium text-zinc-400 mb-2">Detected By</h3>
-                    <span className="badge bg-zinc-800 text-zinc-300">
-                      {selectedIssue.author}
-                    </span>
                   </div>
-                )}
-
-                {/* Issue ID and metadata */}
-                <div className="pt-4 border-t border-zinc-800">
-                  <div className="flex items-center justify-between text-xs">
-                    <p className="text-zinc-600">
-                      Issue ID: <code className="font-mono">{selectedIssue.id}</code>
-                    </p>
-                    <button
-                      onClick={() => handleCopyId(selectedIssue.id)}
-                      className="text-zinc-500 hover:text-zinc-300 flex items-center gap-1"
-                    >
-                      {copiedId === selectedIssue.id ? (
-                        <>
-                          <Check className="w-3 h-3" /> Copied!
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3 h-3" /> Copy ID
-                        </>
-                      )}
-                    </button>
-                  </div>
-                  {selectedIssue.created_at && (
-                    <p className="text-xs text-zinc-600 mt-1">
-                      Created: {new Date(selectedIssue.created_at).toLocaleString()}
-                    </p>
-                  )}
+                </>
+              ) : (
+                <div className="overflow-y-auto flex-1 min-h-0">
+                  {renderIssueContent(selectedIssue)}
                 </div>
-              </div>
+              )}
             </div>
           ) : (
             <div className="h-full flex items-center justify-center p-8">

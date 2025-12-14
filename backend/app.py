@@ -28,7 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from models.issue import IssueStore, IssueType, RiskLevel
+from models.issue import Issue, IssueStore, IssueType, RiskLevel
 from agents.graph import run_analysis
 
 
@@ -167,6 +167,22 @@ class ReportFile(BaseModel):
 class ReportResponse(BaseModel):
     """Response model for report generation."""
     files: list[ReportFile] = Field(..., description="List of generated report files")
+
+
+class ImproveIssueRequest(BaseModel):
+    """Request model for improving an issue."""
+    model: str = Field(..., description="Model name to use for improvement")
+
+
+class UpdateIssueRequest(BaseModel):
+    """Request model for updating an issue."""
+    title: Optional[str] = Field(None, description="Updated title")
+    description: Optional[str] = Field(None, description="Updated description")
+    solution: Optional[str] = Field(None, description="Updated solution")
+    code_snippet: Optional[str] = Field(None, description="Updated code snippet")
+    risk_level: Optional[str] = Field(None, description="Updated risk level")
+    type: Optional[str] = Field(None, description="Updated issue type")
+    author: Optional[str] = Field(None, description="Updated author")
 
 
 # =============================================================================
@@ -714,6 +730,234 @@ async def clear_all_issues():
         "deleted_count": count,
         "message": f"Successfully deleted {count} issues"
     }
+
+
+@app.post("/issues/{issue_id}/improve", response_model=IssueDetailResponse, tags=["Issues"])
+async def improve_issue(issue_id: str, request: ImproveIssueRequest):
+    """
+    Improve an issue using a custom LLM model.
+    
+    Uses the specified model to enhance the issue's title, description, and solution
+    while maintaining the same location, type, risk level, and code snippet.
+    """
+    store = get_issue_store()
+    issue_dict = store.get_by_id(issue_id)
+    
+    if not issue_dict:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Issue not found: {issue_id}"
+        )
+    
+    try:
+        from langchain_core.prompts import ChatPromptTemplate
+        from config import get_llm, get_settings
+        import json
+        import re
+        
+        settings = get_settings()
+        
+        if not settings.use_llm_analysis:
+            raise HTTPException(
+                status_code=400,
+                detail="LLM analysis is not enabled. Set USE_LLM_ANALYSIS=true to use this feature."
+            )
+        
+        llm = get_llm(model_override=request.model)
+        
+        # Build prompt for improving the issue
+        system_prompt = """You are an expert code reviewer helping to improve issue descriptions.
+Your task is to enhance the clarity, detail, and actionability of code issue reports while maintaining technical accuracy.
+
+IMPORTANT: You must return a valid JSON object with exactly these fields:
+- title: Improved title (keep it concise, max 100 characters)
+- description: Enhanced description with more detail and context
+- solution: Improved solution with specific, actionable steps
+
+Do NOT change the location, type, risk_level, or code_snippet. Only improve title, description, and solution.
+Return ONLY valid JSON, no markdown code blocks, no additional text."""
+        
+        human_prompt = """Improve the following code issue report:
+
+Original Issue:
+- Title: {title}
+- Type: {type}
+- Risk Level: {risk_level}
+- Location: {location}
+- Description: {description}
+- Code Snippet: {code_snippet}
+- Solution: {solution}
+
+Provide an improved version with:
+1. A clearer, more descriptive title
+2. A more detailed description that explains the issue better
+3. A more actionable solution with specific steps
+
+Return your response as a JSON object with fields: title, description, solution"""
+        
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", system_prompt),
+            ("human", human_prompt)
+        ])
+        
+        messages = prompt.format_messages(
+            title=issue_dict.get("title", ""),
+            type=issue_dict.get("type", ""),
+            risk_level=issue_dict.get("risk_level", ""),
+            location=issue_dict.get("location", ""),
+            description=issue_dict.get("description", ""),
+            code_snippet=issue_dict.get("code_snippet", ""),
+            solution=issue_dict.get("solution", "")
+        )
+        
+        response = llm.invoke(messages)
+        response_text = response.content.strip()
+        
+        # Try to extract JSON from response (handle various formats)
+        improved_data = {}
+        
+        # First, try to find JSON in markdown code blocks
+        json_block_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+        if json_block_match:
+            response_text = json_block_match.group(1)
+        
+        # Try to find JSON object boundaries
+        json_start = response_text.find('{')
+        json_end = response_text.rfind('}')
+        if json_start >= 0 and json_end > json_start:
+            json_text = response_text[json_start:json_end + 1]
+            
+            # Try parsing the JSON
+            try:
+                improved_data = json.loads(json_text)
+            except json.JSONDecodeError:
+                # Fallback: try to extract fields manually with better regex
+                # Handle multiline strings and escaped quotes
+                title_match = re.search(r'"title"\s*:\s*"((?:[^"\\]|\\.)*)"', json_text, re.DOTALL)
+                desc_match = re.search(r'"description"\s*:\s*"((?:[^"\\]|\\.)*)"', json_text, re.DOTALL)
+                sol_match = re.search(r'"solution"\s*:\s*"((?:[^"\\]|\\.)*)"', json_text, re.DOTALL)
+                
+                if title_match:
+                    improved_data["title"] = title_match.group(1).replace('\\"', '"').replace('\\n', '\n')
+                if desc_match:
+                    improved_data["description"] = desc_match.group(1).replace('\\"', '"').replace('\\n', '\n')
+                if sol_match:
+                    improved_data["solution"] = sol_match.group(1).replace('\\"', '"').replace('\\n', '\n')
+        
+        # Validate that we got at least some data
+        if not improved_data or not any(key in improved_data for key in ["title", "description", "solution"]):
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to parse improved issue data from LLM response. The model may not have returned valid JSON."
+            )
+        
+        # Create improved issue (keep same location, type, risk_level, code_snippet for same ID)
+        improved_title = improved_data.get("title", issue_dict.get("title", ""))
+        improved_description = improved_data.get("description", issue_dict.get("description", ""))
+        improved_solution = improved_data.get("solution", issue_dict.get("solution", ""))
+        
+        # Create Issue object with improved fields
+        improved_issue = Issue(
+            location=issue_dict.get("location", ""),
+            type=IssueType(issue_dict.get("type", "architecture")),
+            risk_level=RiskLevel(issue_dict.get("risk_level", "low")),
+            title=improved_title,
+            description=improved_description,
+            code_snippet=issue_dict.get("code_snippet", ""),
+            solution=improved_solution,
+            author=issue_dict.get("author"),
+            related_issues=issue_dict.get("related_issues"),
+        )
+        
+        # Get markdown for the improved issue
+        markdown = improved_issue.to_markdown()
+        
+        return IssueDetailResponse(
+            id=improved_issue.id,
+            location=improved_issue.location,
+            type=improved_issue.type.value,
+            risk_level=improved_issue.risk_level.value,
+            title=improved_issue.title,
+            description=improved_issue.description,
+            code_snippet=improved_issue.code_snippet,
+            solution=improved_issue.solution,
+            author=improved_issue.author,
+            created_at=issue_dict.get("created_at"),  # Keep original created_at
+            markdown_content=markdown,
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to improve issue: {str(e)}"
+        )
+
+
+@app.put("/issues/{issue_id}", response_model=IssueDetailResponse, tags=["Issues"])
+async def update_issue(issue_id: str, request: UpdateIssueRequest):
+    """
+    Update/overwrite an issue with new data.
+    
+    This endpoint allows updating issue fields. The issue will be overwritten
+    in storage if it exists. Note that changing location, title, or code_snippet
+    will result in a new issue ID.
+    """
+    store = get_issue_store()
+    existing_issue = store.get_by_id(issue_id)
+    
+    if not existing_issue:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Issue not found: {issue_id}"
+        )
+    
+    # Build updated issue data (use request values if provided, otherwise keep existing)
+    updated_data = {
+        "location": existing_issue.get("location", ""),
+        "type": request.type if request.type else existing_issue.get("type", "architecture"),
+        "risk_level": request.risk_level if request.risk_level else existing_issue.get("risk_level", "low"),
+        "title": request.title if request.title else existing_issue.get("title", ""),
+        "description": request.description if request.description else existing_issue.get("description", ""),
+        "code_snippet": request.code_snippet if request.code_snippet else existing_issue.get("code_snippet", ""),
+        "solution": request.solution if request.solution else existing_issue.get("solution", ""),
+        "author": request.author if request.author else existing_issue.get("author"),
+        "related_issues": existing_issue.get("related_issues"),
+    }
+    
+    # Create Issue object
+    updated_issue = Issue(
+        location=updated_data["location"],
+        type=IssueType(updated_data["type"]),
+        risk_level=RiskLevel(updated_data["risk_level"]),
+        title=updated_data["title"],
+        description=updated_data["description"],
+        code_snippet=updated_data["code_snippet"],
+        solution=updated_data["solution"],
+        author=updated_data["author"],
+        related_issues=updated_data["related_issues"],
+    )
+    
+    # Save the updated issue (this will overwrite if same ID, or create new if ID changed)
+    store.save(updated_issue)
+    
+    # Get markdown
+    markdown = store.get_markdown(updated_issue.id) or updated_issue.to_markdown()
+    
+    return IssueDetailResponse(
+        id=updated_issue.id,
+        location=updated_issue.location,
+        type=updated_issue.type.value,
+        risk_level=updated_issue.risk_level.value,
+        title=updated_issue.title,
+        description=updated_issue.description,
+        code_snippet=updated_issue.code_snippet,
+        solution=updated_issue.solution,
+        author=updated_issue.author,
+        created_at=existing_issue.get("created_at"),  # Keep original created_at
+        markdown_content=markdown,
+    )
 
 
 # -----------------------------------------------------------------------------
