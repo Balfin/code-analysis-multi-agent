@@ -118,7 +118,10 @@ class Settings(BaseSettings):
     )
     
     class Config:
-        env_file = ".env"
+        # Look for .env in project root (parent of backend directory)
+        _backend_dir = Path(__file__).parent
+        _project_root = _backend_dir.parent
+        env_file = str(_project_root / ".env")
         env_file_encoding = "utf-8"
         extra = "ignore"
 

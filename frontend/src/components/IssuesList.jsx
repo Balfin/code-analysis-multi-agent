@@ -64,6 +64,7 @@ function IssuesList({ onSelectIssue }) {
   const [improveError, setImproveError] = useState(null)
   const [improvedIssue, setImprovedIssue] = useState(null)
   const [activeTab, setActiveTab] = useState('original')
+  const [improvingIssueId, setImprovingIssueId] = useState(null) // Track which issue is being improved
 
   // Fetch issues from API
   const fetchIssues = useCallback(async () => {
@@ -119,6 +120,7 @@ function IssuesList({ onSelectIssue }) {
     setImprovedIssue(null)
     setActiveTab('original')
     setImproveError(null)
+    setImprovingIssueId(null) // Cancel any in-flight improvement requests
   }, [selectedId])
 
   // Sort issues client-side
@@ -199,18 +201,37 @@ function IssuesList({ onSelectIssue }) {
   const handleImprove = async () => {
     if (!selectedIssue || !selectedModel || isImproving) return
     
+    const issueId = selectedIssue.id
     setIsImproving(true)
     setImproveError(null)
+    setImprovingIssueId(issueId) // Track which issue we're improving
     
     try {
-      const improved = await apiClient.improveIssue(selectedIssue.id, selectedModel)
-      setImprovedIssue(improved)
-      setActiveTab('improved')
+      const improved = await apiClient.improveIssue(issueId, selectedModel)
+      
+      // Only set the improved issue if we're still viewing the same issue
+      // This prevents race conditions when the user switches issues during the API call
+      if (selectedId === issueId) {
+        setImprovedIssue(improved)
+        setActiveTab('improved')
+      }
+      // If the issue changed, silently ignore the result
     } catch (err) {
-      setImproveError(err.message || 'Failed to improve issue')
-      console.error('Improve error:', err)
+      // Only show error if we're still viewing the same issue
+      if (selectedId === issueId) {
+        setImproveError(err.message || 'Failed to improve issue')
+        console.error('Improve error:', err)
+      }
     } finally {
-      setIsImproving(false)
+      // Only clear improving state if this was the current request
+      if (selectedId === issueId) {
+        setIsImproving(false)
+        setImprovingIssueId(null)
+      } else {
+        // Clear the improving state even if issue changed (cleanup)
+        setIsImproving(false)
+        setImprovingIssueId(null)
+      }
     }
   }
 

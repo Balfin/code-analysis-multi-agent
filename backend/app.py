@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 
 from models.issue import Issue, IssueStore, IssueType, RiskLevel
 from agents.graph import run_analysis
+from config import get_settings, setup_langsmith
 
 
 # =============================================================================
@@ -1492,6 +1493,14 @@ async def startup_event():
     os.makedirs(ISSUES_DIR, exist_ok=True)
     # Ensure reports directory exists
     os.makedirs(REPORTS_DIR, exist_ok=True)
+    
+    # Log LangSmith status
+    settings = get_settings()
+    if settings.langchain_tracing_v2 and settings.langchain_api_key:
+        print(f"📊 LangSmith tracing enabled: {settings.langchain_project}")
+    else:
+        print("⚠️  LangSmith tracing disabled (set LANGCHAIN_TRACING_V2=true and LANGCHAIN_API_KEY)")
+    
     print(f"🚀 Code Analysis API started")
     print(f"📁 Issues directory: {ISSUES_DIR}")
     print(f"📁 Reports directory: {REPORTS_DIR}")
