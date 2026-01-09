@@ -14,6 +14,7 @@ Endpoints:
 """
 
 import asyncio
+import json
 import os
 import subprocess
 import uuid
@@ -49,6 +50,12 @@ executor = ThreadPoolExecutor(max_workers=2)
 
 # In-memory storage for analysis tasks (would use Redis/DB in production)
 analysis_tasks: dict[str, dict[str, Any]] = {}
+
+# Chat session storage (in-memory with JSON persistence)
+chat_sessions: dict[str, dict[str, Any]] = {}
+SESSION_TIMEOUT = 1800  # 30 minutes in seconds
+CHAT_LOGS_DIR = os.path.join(_PROJECT_ROOT, "chat_logs")
+MAX_HISTORY_MESSAGES = 20  # Keep last 20 messages
 
 
 # =============================================================================
@@ -124,6 +131,10 @@ class IssueDetailResponse(BaseModel):
 class ChatRequest(BaseModel):
     """Request model for chat endpoint."""
     message: str = Field(..., description="User's question or message")
+    session_id: Optional[str] = Field(
+        default=None,
+        description="Session ID for conversation continuity. Auto-generated if not provided."
+    )
     context: Optional[dict[str, Any]] = Field(
         default=None,
         description="Optional context (e.g., current issue being viewed)"
@@ -140,6 +151,7 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     """Response model for chat endpoint."""
+    session_id: str = Field(..., description="Session ID for this conversation")
     # For backward compatibility with single model
     response: Optional[str] = None
     issues_referenced: Optional[list[str]] = None
@@ -234,6 +246,52 @@ app.add_middleware(
 # =============================================================================
 # Helper Functions
 # =============================================================================
+
+def save_session_to_json(session_id: str) -> None:
+    """Save chat session to JSON file for manual review."""
+    if session_id not in chat_sessions:
+        return
+    
+    session = chat_sessions[session_id]
+    os.makedirs(CHAT_LOGS_DIR, exist_ok=True)
+    
+    file_path = os.path.join(CHAT_LOGS_DIR, f"session_{session_id}.json")
+    
+    # Build JSON structure
+    session_data = {
+        "session_id": session_id,
+        "created_at": session.get("created_at", ""),
+        "last_access": session.get("last_access", ""),
+        "messages": session.get("messages", []),
+        "metadata": {
+            "total_messages": len(session.get("messages", [])),
+            "models_used": list(set(session.get("models_used", []))),
+            "issues_discussed": list(set(session.get("issues_discussed", [])))
+        }
+    }
+    
+    with open(file_path, 'w', encoding='utf-8') as f:
+        json.dump(session_data, f, indent=2, ensure_ascii=False)
+
+
+def cleanup_old_sessions() -> int:
+    """Remove sessions older than SESSION_TIMEOUT. Returns count of removed sessions."""
+    now = datetime.now()
+    to_remove = []
+    
+    for session_id, session in chat_sessions.items():
+        last_access = session.get("last_access")
+        if isinstance(last_access, str):
+            last_access = datetime.fromisoformat(last_access)
+        
+        if (now - last_access).total_seconds() > SESSION_TIMEOUT:
+            to_remove.append(session_id)
+    
+    for session_id in to_remove:
+        del chat_sessions[session_id]
+    
+    return len(to_remove)
+
 
 def get_issue_store() -> IssueStore:
     """Get or create the issue store."""
@@ -970,7 +1028,9 @@ async def _process_single_model_chat(
     context_str: str,
     model_name: Optional[str],
     all_issues: list,
-    store: IssueStore
+    store: IssueStore,
+    session_id: str,
+    history_messages: list[tuple[str, str]]
 ) -> dict[str, Any]:
     """Process chat request for a single model and return response dict."""
     try:
@@ -982,9 +1042,13 @@ async def _process_single_model_chat(
         if settings.use_llm_analysis:
             llm = get_llm(model_override=model_name)
             
-            # Enhanced system prompt with RAG context
-            system_prompt = """You are a helpful code analysis assistant. You help developers understand
-and fix code issues found during automated analysis.
+            # Enhanced system prompt with RAG context and conversation support
+            system_prompt = """You are a helpful code analysis assistant in an ongoing conversation.
+You help developers understand and fix code issues found during automated analysis.
+
+IMPORTANT: This is a multi-turn conversation. When users ask follow-up questions like 
+"how do I fix this?", "tell me more", or "what about that issue?", refer back to the 
+issue or topic you just discussed in previous messages. Maintain context across the conversation.
 
 You have access to the following context about the codebase:
 {context}
@@ -995,15 +1059,12 @@ by title and location. If asked for recommendations, prioritize critical and hig
 issues first. Use the retrieved code context to provide detailed, accurate answers about
 the codebase."""
             
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", system_prompt),
-                ("human", "{message}")
-            ])
-            
-            messages = prompt.format_messages(
-                context=context_str,
-                message=message
-            )
+            # Build messages with history
+            messages = [
+                ("system", system_prompt.format(context=context_str)),
+                *history_messages,  # Include conversation history
+                ("human", message)
+            ]
             
             response = llm.invoke(messages)
             
@@ -1151,6 +1212,25 @@ Current Issue Context:
         for issue in critical_issues:
             context_str += f"- {issue.get('title')} at {issue.get('location')}\n"
     
+    # Session management: get or create session
+    session_id = request.session_id or str(uuid.uuid4())[:12]
+    now = datetime.now()
+    
+    if session_id not in chat_sessions:
+        chat_sessions[session_id] = {
+            "messages": [],
+            "created_at": now.isoformat(),
+            "last_access": now.isoformat(),
+            "models_used": [],
+            "issues_discussed": []
+        }
+    
+    session = chat_sessions[session_id]
+    session["last_access"] = now.isoformat()
+    
+    # Cleanup old sessions periodically
+    cleanup_old_sessions()
+    
     # Determine which models to use
     models_to_use = []
     if request.models:
@@ -1160,19 +1240,64 @@ Current Issue Context:
     else:
         models_to_use = [None]  # Use default model
     
-    # Process all models in parallel
-    tasks = [
-        _process_single_model_chat(
+    # Process all models with their separate conversation histories
+    tasks = []
+    for model_name in models_to_use:
+        model_key = model_name if model_name else "default"
+        
+        # Get conversation history for this specific model (last MAX_HISTORY_MESSAGES)
+        model_messages = [
+            (msg["role"], msg["content"])
+            for msg in session["messages"]
+            if msg.get("model") == model_key
+        ][-MAX_HISTORY_MESSAGES:]
+        
+        tasks.append(_process_single_model_chat(
             message=request.message,
             context_str=context_str,
             model_name=model_name,
             all_issues=all_issues,
-            store=store
-        )
-        for model_name in models_to_use
-    ]
+            store=store,
+            session_id=session_id,
+            history_messages=model_messages
+        ))
     
     results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Save messages to session and collect issues discussed
+    for model_name, result in zip(models_to_use, results):
+        model_key = model_name if model_name else "default"
+        
+        # Track model usage
+        if model_key not in session.get("models_used", []):
+            session.setdefault("models_used", []).append(model_key)
+        
+        # Add user message (only once per model)
+        session["messages"].append({
+            "role": "human",
+            "content": request.message,
+            "timestamp": now.isoformat(),
+            "model": model_key
+        })
+        
+        # Add assistant response if successful
+        if not isinstance(result, Exception):
+            session["messages"].append({
+                "role": "assistant",
+                "content": result.get("response", ""),
+                "timestamp": datetime.now().isoformat(),
+                "model": model_key,
+                "issues_referenced": result.get("issues_referenced", [])
+            })
+            
+            # Track issues discussed
+            if result.get("issues_referenced"):
+                for issue_id in result["issues_referenced"]:
+                    if issue_id not in session.get("issues_discussed", []):
+                        session.setdefault("issues_discussed", []).append(issue_id)
+    
+    # Save session to JSON file
+    save_session_to_json(session_id)
     
     # Build response
     if len(models_to_use) == 1:
@@ -1186,12 +1311,14 @@ Current Issue Context:
                 all_issues=all_issues
             )
             return ChatResponse(
+                session_id=session_id,
                 response=fallback_response,
                 issues_referenced=None,
                 suggestions=["Enable LLM for more detailed responses"]
             )
         
         return ChatResponse(
+            session_id=session_id,
             response=result["response"],
             issues_referenced=result["issues_referenced"],
             suggestions=result["suggestions"]
@@ -1217,7 +1344,7 @@ Current Issue Context:
             else:
                 responses_dict[model_key] = result
         
-        return ChatResponse(responses=responses_dict)
+        return ChatResponse(session_id=session_id, responses=responses_dict)
 
 
 def _generate_fallback_response(
@@ -1278,6 +1405,96 @@ Ask me about:
 - "Give me an overview"
 
 For more detailed responses, enable LLM integration."""
+
+
+# -----------------------------------------------------------------------------
+# Chat Session Management Endpoints
+# -----------------------------------------------------------------------------
+
+@app.get("/chat/sessions", tags=["Chat"])
+async def list_chat_sessions():
+    """
+    List all saved chat sessions.
+    
+    Returns a list of session summaries including session ID, timestamps,
+    message count, and models used.
+    """
+    if not os.path.exists(CHAT_LOGS_DIR):
+        return {"sessions": []}
+    
+    sessions = []
+    for filename in os.listdir(CHAT_LOGS_DIR):
+        if filename.startswith("session_") and filename.endswith(".json"):
+            file_path = os.path.join(CHAT_LOGS_DIR, filename)
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    sessions.append({
+                        "session_id": data.get("session_id"),
+                        "created_at": data.get("created_at"),
+                        "last_access": data.get("last_access"),
+                        "message_count": data.get("metadata", {}).get("total_messages", 0),
+                        "models_used": data.get("metadata", {}).get("models_used", [])
+                    })
+            except Exception as e:
+                print(f"Error reading session file {filename}: {e}")
+    
+    # Sort by last_access descending
+    sessions.sort(key=lambda x: x.get("last_access", ""), reverse=True)
+    return {"sessions": sessions}
+
+
+@app.get("/chat/sessions/{session_id}", tags=["Chat"])
+async def get_chat_session(session_id: str):
+    """
+    Get full chat session log.
+    
+    Returns the complete conversation history for a specific session,
+    including all messages, timestamps, and metadata.
+    """
+    file_path = os.path.join(CHAT_LOGS_DIR, f"session_{session_id}.json")
+    
+    if not os.path.exists(file_path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Session not found: {session_id}"
+        )
+    
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to read session: {str(e)}"
+        )
+
+
+@app.delete("/chat/sessions/{session_id}", tags=["Chat"])
+async def delete_chat_session(session_id: str):
+    """
+    Delete a chat session.
+    
+    Removes the session from both memory and the JSON file storage.
+    """
+    file_path = os.path.join(CHAT_LOGS_DIR, f"session_{session_id}.json")
+    
+    if not os.path.exists(file_path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Session not found: {session_id}"
+        )
+    
+    try:
+        os.remove(file_path)
+        if session_id in chat_sessions:
+            del chat_sessions[session_id]
+        return {"status": "deleted", "session_id": session_id}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete session: {str(e)}"
+        )
 
 
 # -----------------------------------------------------------------------------
@@ -1493,6 +1710,8 @@ async def startup_event():
     os.makedirs(ISSUES_DIR, exist_ok=True)
     # Ensure reports directory exists
     os.makedirs(REPORTS_DIR, exist_ok=True)
+    # Ensure chat logs directory exists
+    os.makedirs(CHAT_LOGS_DIR, exist_ok=True)
     
     # Log LangSmith status
     settings = get_settings()
@@ -1504,6 +1723,7 @@ async def startup_event():
     print(f"🚀 Code Analysis API started")
     print(f"📁 Issues directory: {ISSUES_DIR}")
     print(f"📁 Reports directory: {REPORTS_DIR}")
+    print(f"📁 Chat logs directory: {CHAT_LOGS_DIR}")
 
 
 @app.on_event("shutdown")

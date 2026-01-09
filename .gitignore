@@ -140,3 +140,7 @@ reports/report-*.md
 reports/report-*.docx
 reports/report-*.pdf
 reports/report-*
+
+# Chat session logs
+chat_logs/
+*.chat_logs/

@@ -1624,3 +1624,133 @@ The following phases can be worked on in parallel after their dependencies are m
 3. Integrate and test in phases 12-13
 
 Total estimated time with parallel work: Backend track + Integration (vs. all sequential which would be longer).
+
+---
+
+## Appendix B: Chat Memory Feature
+
+### Overview
+
+The chat endpoint supports conversation memory, allowing multi-turn conversations where the assistant remembers previous context. This enables natural follow-up questions like "give me the most important issue" → "how can I fix this issue?"
+
+### Features
+
+- **Session-based conversations**: Each conversation has a unique session ID
+- **Conversation history**: Last 20 messages are maintained per model
+- **Separate history per model**: Each model maintains its own conversation thread
+- **JSON persistence**: All sessions are saved to `chat_logs/` for manual review
+- **Auto-cleanup**: Sessions older than 30 minutes are removed from memory
+- **Session management API**: List, view, and delete sessions
+
+### Implementation Details
+
+**Session Storage** (`backend/app.py`):
+- `chat_sessions`: In-memory dict storing active sessions
+- `SESSION_TIMEOUT`: 1800 seconds (30 minutes)
+- `CHAT_LOGS_DIR`: `{project_root}/chat_logs/`
+- `MAX_HISTORY_MESSAGES`: 20 messages (10 exchanges)
+
+**Session Management Functions**:
+- `save_session_to_json(session_id)`: Saves session data to JSON file
+- `cleanup_old_sessions()`: Removes sessions older than 30 minutes
+
+**Updated Models**:
+- `ChatRequest`: Added `session_id: Optional[str]` field
+- `ChatResponse`: Added `session_id: str` field (required)
+
+**Enhanced System Prompt**: Updated to support multi-turn conversations and recognize follow-up questions
+
+**New Endpoints**:
+- `GET /chat/sessions`: List all saved chat sessions
+- `GET /chat/sessions/{session_id}`: Get full session log
+- `DELETE /chat/sessions/{session_id}`: Delete a session
+
+### Usage Examples
+
+**Starting a Conversation**:
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "give me the most important issue to fix"}'
+```
+
+Response includes `session_id`:
+```json
+{
+  "session_id": "abc123def456",
+  "response": "The most critical issue is...",
+  "issues_referenced": ["issue-123"]
+}
+```
+
+**Continuing a Conversation**:
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "how can I fix this issue?", "session_id": "abc123def456"}'
+```
+
+The assistant will reference the previous issue discussed.
+
+### Session Data Structure
+
+Sessions are stored as JSON files in `chat_logs/session_{session_id}.json`:
+
+```json
+{
+  "session_id": "abc123def456",
+  "created_at": "2026-01-08T10:30:00",
+  "last_access": "2026-01-08T10:35:00",
+  "messages": [
+    {
+      "role": "human",
+      "content": "give me the most important issue",
+      "timestamp": "2026-01-08T10:30:00",
+      "model": "llama3.2:latest"
+    },
+    {
+      "role": "assistant",
+      "content": "The most critical issue is...",
+      "timestamp": "2026-01-08T10:30:05",
+      "model": "llama3.2:latest",
+      "issues_referenced": ["issue-123"]
+    }
+  ],
+  "metadata": {
+    "total_messages": 4,
+    "models_used": ["llama3.2:latest"],
+    "issues_discussed": ["issue-123"]
+  }
+}
+```
+
+### Testing
+
+Run the test script to verify functionality:
+
+```bash
+cd backend
+python -m pytest tests/test_chat_memory.py -v
+```
+
+The test verifies:
+1. Session creation
+2. Multi-turn conversation with context
+3. Session list retrieval
+4. Full session data retrieval
+5. JSON file persistence
+
+### Configuration
+
+- `SESSION_TIMEOUT`: 1800 seconds (30 minutes)
+- `MAX_HISTORY_MESSAGES`: 20 messages (10 exchanges)
+- `CHAT_LOGS_DIR`: `{project_root}/chat_logs/`
+
+### Notes
+
+- Sessions persist in memory until timeout or server restart
+- JSON files remain for manual review even after cleanup
+- Each model maintains separate conversation history
+- Session IDs are 12-character UUIDs
+- All timestamps are in ISO 8601 format
+- Chat logs directory is excluded from git via `.gitignore`
